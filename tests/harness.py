@@ -3,8 +3,9 @@ Before/after equivalence harness for Atlas kernel optimizations.
 
 Runs a kernel from `third_party/npu_model` as written, runs it again after an
 optimizer has rewritten its assembly, and compares the architectural state both
-runs leave behind. Both runs use the model's default mode (no scoreboard), so an
-optimized kernel only passes if its own ordering and `delay`s are sufficient.
+runs leave behind. npu_model (rtl-match) asserts on every RTL scheduling
+violation, so an optimized kernel only passes if its own ordering and `delay`s
+are sufficient.
 """
 
 from __future__ import annotations
@@ -82,11 +83,9 @@ class Kernel:
 
     def source(self) -> str:
         """Assembly text to hand to the optimizer."""
-        if self.asm_path is not None:
-            return self.asm_path.read_text()
-        from npu_model.util.converter import program_to_asm
-
-        return program_to_asm(self.program())
+        if self.asm_path is None:
+            raise RuntimeError(f"{self.name} was not loaded from a .S file")
+        return self.asm_path.read_text()
 
 
 def discover_kernels() -> list[Kernel]:
@@ -129,12 +128,10 @@ def run_program(
     *,
     dram_regions: list[tuple[str, int, int]],
     max_cycles: int,
-    compare_vmem: bool,
 ) -> RunResult:
     """
-    Run `program` without the scoreboard and snapshot `dram_regions` (from
-    `compared_dram_regions` on the *original* program, so both runs capture the
-    same bytes) plus, optionally, all of VMEM.
+    Run `program` and snapshot `dram_regions` (from `compared_dram_regions` on the
+    *original* program, so both runs capture the same bytes) plus all of VMEM.
     """
     from npu_model.logging import LoggerConfig
     from npu_model.simulation import Simulation
@@ -155,8 +152,7 @@ def run_program(
             # the kernel may have left pointing somewhere else.
             for label, base, length in dram_regions:
                 result.regions[label] = state.dram[base : base + length].numpy().tobytes()
-            if compare_vmem:
-                result.regions["vmem"] = state.vmem.numpy().tobytes()
+            result.regions["vmem"] = state.vmem.numpy().tobytes()
             return result
         finally:
             sim.close()
@@ -288,7 +284,6 @@ def check_equivalence(
     *,
     workdir: Path,
     max_cycles: int,
-    compare_vmem: bool = True,
 ) -> tuple[RunResult, RunResult]:
     """
     Run `kernel`, optimize it, run the result, and return (before, after).
@@ -303,13 +298,7 @@ def check_equivalence(
     dram_regions = compared_dram_regions(program)
 
     def run(prog) -> RunResult:
-        return run_program(
-            prog,
-            hardware_config,
-            dram_regions=dram_regions,
-            max_cycles=max_cycles,
-            compare_vmem=compare_vmem,
-        )
+        return run_program(prog, hardware_config, dram_regions=dram_regions, max_cycles=max_cycles)
 
     before = run(program)
     if not before.finished:
@@ -330,8 +319,8 @@ def check_equivalence(
         after = run(optimized)
     except Exception as exc:
         raise EquivalenceError(
-            "raised during simulation, usually a missing delay (unit backpressure or "
-            f"bank conflict) ({after_path}): {exc!r}"
+            "raised during simulation, usually a broken timing rule (e.g. a missing "
+            f"delay) ({after_path}): {exc!r}"
         ) from exc
     if not after.finished:
         raise EquivalenceError(

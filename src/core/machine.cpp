@@ -15,32 +15,15 @@ int unitCapacity(Unit u, int index) {
 }
 
 const char* unitName(Unit u) {
-    switch (u) {
-        case Unit::ScalarLoad: return "scalar load path";
-        case Unit::ScalarWriteback: return "scalar write port";
-        case Unit::VloadPath: return "VLOAD path";
-        case Unit::VstorePath: return "VSTORE path";
-        case Unit::VmemBank: return "VMEM bank";
-        case Unit::Xlu: return "XLU";
-        case Unit::MxuPort: return "MXU port";
-        case Unit::MxuCompute: return "MXU in-flight matmuls";
-        case Unit::MxuAccRead: return "accumulator read";
-        case Unit::MxuAccWrite: return "accumulator write";
-        case Unit::MxuWeightStream: return "weight push stream";
-        case Unit::MxuAccStream: return "accumulator push stream";
-    }
-    return "?";
+    static const char* names[] = {"scalar load path", "scalar write port", "VLOAD path", "VSTORE path",
+                                  "VMEM bank", "XLU", "MXU port", "MXU in-flight matmuls", "accumulator read",
+                                  "accumulator write", "weight push stream", "accumulator push stream"};
+    return names[(int)u];
 }
 
 const char* edgeKindName(EdgeKind k) {
-    switch (k) {
-        case EdgeKind::RAW: return "RAW";
-        case EdgeKind::WAR: return "WAR";
-        case EdgeKind::WAW: return "WAW";
-        case EdgeKind::Rule: return "rule";
-        case EdgeKind::Order: return "order";
-    }
-    return "?";
+    static const char* names[] = {"RAW", "WAR", "WAW", "rule", "order"};
+    return names[(int)k];
 }
 
 bool isBarrier(const Instr& in) {

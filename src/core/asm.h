@@ -4,7 +4,8 @@
 #include <string>
 #include <vector>
 
-// Execution engines of the Atlas core (npu_model rtl-match).
+// Execution engines of the Atlas core (npu_model rtl-match). The viewer draws one
+// lane per engine in this order.
 enum class Engine { Scalar, Lsu, Mxu0, Mxu1, Vpu, Xlu, Dma };
 
 // Groups of instructions that share the same timing behavior.
@@ -33,7 +34,6 @@ struct OpInfo {
 };
 
 const OpInfo* findOp(const std::string& name);  // nullptr if not an Atlas instruction
-const char* engineName(Engine e);
 bool hasOperand(const OpInfo& op, const std::string& token);  // e.g. hasOperand(op, "x1")
 bool isControlFlow(const OpInfo& op);                         // branches and jumps (one delay slot)
 
@@ -46,7 +46,6 @@ struct Instr {
     std::string immText;      // immediate as written in the source, reused when printing
     std::string target;       // branch / jal label
     std::string comment;      // trailing comment, without the '#'
-    std::vector<std::string> leadingComments;  // full-line comments right above it
     bool keep = false;        // "delay N # keep" is never removed by the optimizer
     int line = 0;             // source line, 0 if created by the optimizer
 };

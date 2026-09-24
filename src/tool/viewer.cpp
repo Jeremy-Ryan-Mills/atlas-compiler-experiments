@@ -4,15 +4,6 @@
 #include <climits>
 #include <sstream>
 
-static const Engine kEngines[] = {Engine::Scalar, Engine::Lsu, Engine::Mxu0, Engine::Mxu1,
-                                  Engine::Vpu, Engine::Xlu, Engine::Dma};
-
-static int engineIndex(Engine e) {
-    for (int i = 0; i < 7; i++)
-        if (kEngines[i] == e) return i;
-    return 0;
-}
-
 static int criticalPathLength(const DepGraph& g) {
     std::vector<int> h = criticalHeights(g);
     int best = 0;
@@ -71,12 +62,11 @@ static GraphView makeView(const std::vector<Instr>& seq, const std::vector<int>&
 }
 
 ProgramView buildProgramView(const std::string& source, const AsmProgram& original, const Code& optimized,
-                             const SimResult& before, const SimResult& after, const std::vector<std::string>& log) {
+                             const SimResult& before, const SimResult& after) {
     ProgramView view;
     view.source = source;
     view.before = before;
     view.after = after;
-    view.log = log;
     Code orig = buildBlocks(original);
     std::vector<RegValues> entryOrig = blockEntryValues(orig);
     std::vector<RegValues> entryOpt = blockEntryValues(optimized);
@@ -126,372 +116,224 @@ static std::string js(const std::string& s) {
     return out + "\"";
 }
 
+
 static void writeGraph(std::ostringstream& o, const GraphView& v) {
     o << "{\"length\":" << v.length << ",\"nodes\":[";
     for (size_t i = 0; i < v.graph.nodes.size(); i++) {
         const Instr& in = v.graph.nodes[i];
-        o << (i ? "," : "") << "[" << js(formatInstr(in)) << "," << in.line << "," << engineIndex(in.op->engine)
-          << "," << v.cycles[i] << "," << v.graph.footprints[i].doneAge << "]";
+        o << (i ? "," : "") << "[" << js(formatInstr(in)) << "," << in.line << "," << (int)in.op->engine << ","
+          << v.cycles[i] << "," << v.graph.footprints[i].doneAge << "]";
     }
     o << "],\"edges\":[";
+    bool first = true;
     for (size_t e = 0; e < v.graph.edges.size(); e++) {
+        if (v.redundant[e]) continue;
         const Edge& ed = v.graph.edges[e];
-        o << (e ? "," : "") << "[" << ed.from << "," << ed.to << "," << ed.distance << "," << (int)ed.kind << ","
-          << js(ed.reason) << "," << (v.redundant[e] ? 1 : 0) << "]";
+        o << (first ? "" : ",") << "[" << ed.from << "," << ed.to << "," << ed.distance << "," << (int)ed.kind << ","
+          << js(ed.reason) << "]";
+        first = false;
     }
     o << "]}";
 }
 
 static void writeSim(std::ostringstream& o, const SimResult& r) {
-    o << "{\"cycles\":" << r.cycles << ",\"issued\":" << r.issued << ",\"delays\":" << r.delays << ",\"busy\":{";
-    bool first = true;
-    for (auto& [engine, cycles] : r.busyCycles) {
-        o << (first ? "" : ",") << js(engine) << ":" << cycles;
-        first = false;
-    }
-    o << "},\"violations\":[";
-    for (size_t i = 0; i < r.violations.size(); i++) o << (i ? "," : "") << js(r.violations[i]);
-    o << "],\"stop\":" << js(r.stopReason) << "}";
+    o << "{\"cycles\":" << r.cycles << ",\"issued\":" << r.issued << ",\"delays\":" << r.delays << ",\"problems\":[";
+    std::vector<std::string> problems = r.violations;
+    if (!r.stopReason.empty()) problems.push_back("simulation stopped: " + r.stopReason);
+    for (size_t i = 0; i < problems.size(); i++) o << (i ? "," : "") << js(problems[i]);
+    o << "]}";
 }
 
+// Engine lanes follow the Engine enum order; edge colors follow EdgeKind.
 static const char* kPage = R"HTML(<!doctype html>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>__TITLE__</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
 <style>
 :root {
-  --ground: #F5F7FA; --panel: #FFFFFF; --ink: #18212E; --muted: #5A6577; --faint: #8A94A4;
-  --rule: #D6DCE4; --grid: #EDF0F4; --accent: #0B7A84; --accent-soft: #DDF1F2; --warn: #B4412F; --good: #2F7D4F;
+  --ground: #F5F7FA; --panel: #FFFFFF; --ink: #18212E; --muted: #5A6577; --grid: #EDF0F4; --rule: #D6DCE4;
+  --accent: #0B7A84; --good: #2F7D4F; --warn: #B4412F;
   --e0: #6E7B8F; --e1: #2E8A5A; --e2: #B8562B; --e3: #C98A1E; --e4: #3B6DB5; --e5: #8756B0; --e6: #0B7A84;
   --k0: #2F66B3; --k1: #C46A1F; --k2: #8B4FB9; --k3: #C23B4B; --k4: #9AA3B0;
-  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
 }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
+  :root {
     color-scheme: dark;
-    --ground: #10151D; --panel: #171E28; --ink: #E4E9F0; --muted: #9AA5B5; --faint: #6D7888;
-    --rule: #2A3441; --grid: #1D2530; --accent: #3CC3CC; --accent-soft: #163A3E; --warn: #F08A74; --good: #6CCB91;
+    --ground: #10151D; --panel: #171E28; --ink: #E4E9F0; --muted: #9AA5B5; --grid: #1D2530; --rule: #2A3441;
+    --accent: #3CC3CC; --good: #6CCB91; --warn: #F08A74;
     --e0: #9AA7BA; --e1: #57C08A; --e2: #EE8656; --e3: #F0B74C; --e4: #6FA0EC; --e5: #B990E3; --e6: #3CC3CC;
     --k0: #6FA0EC; --k1: #F0A25C; --k2: #B98BEA; --k3: #F07684; --k4: #6D7888;
   }
 }
-:root[data-theme="dark"] {
-  color-scheme: dark;
-  --ground: #10151D; --panel: #171E28; --ink: #E4E9F0; --muted: #9AA5B5; --faint: #6D7888;
-  --rule: #2A3441; --grid: #1D2530; --accent: #3CC3CC; --accent-soft: #163A3E; --warn: #F08A74; --good: #6CCB91;
-  --e0: #9AA7BA; --e1: #57C08A; --e2: #EE8656; --e3: #F0B74C; --e4: #6FA0EC; --e5: #B990E3; --e6: #3CC3CC;
-  --k0: #6FA0EC; --k1: #F0A25C; --k2: #B98BEA; --k3: #F07684; --k4: #6D7888;
-}
-body { background: var(--ground); color: var(--ink); font: 14px/1.45 var(--sans); margin: 0; }
-.wrap { padding-inline: 20px; padding-block: 20px 40px; display: grid; gap: 18px; max-width: 1600px; margin: 0 auto; }
-h1 { font-size: 20px; font-weight: 600; margin: 0; text-wrap: balance; }
-h1 code { font: 500 18px var(--mono); color: var(--accent); }
-.sub { color: var(--muted); margin: 2px 0 0; }
-.stats { display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-end; }
-.stat .label { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
-.stat .value { font: 500 22px var(--mono); font-variant-numeric: tabular-nums; }
-.stat .value small { font-size: 13px; color: var(--muted); }
-.stat .value.good { color: var(--good); }
-.engines { display: grid; grid-template-columns: auto 1fr 1fr; gap: 3px 14px; font-size: 12px; align-items: center; max-width: 560px; }
-.engines .hdr { color: var(--muted); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
-.bar { height: 8px; border-radius: 2px; background: var(--grid); position: relative; margin-right: 38px; }
-.bar i { position: absolute; inset: 0 auto 0 0; border-radius: 2px; }
-.bar b { position: absolute; left: calc(100% + 6px); top: -4px; font: 11px var(--mono); color: var(--muted); font-weight: 400; }
-.eng { display: inline-flex; align-items: center; gap: 6px; }
-.dot { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
-.warn { border-left: 3px solid var(--warn); padding: 8px 12px; background: var(--panel); font: 12px var(--mono); }
-.controls { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; position: sticky; top: env(safe-area-inset-top, 0px);
-  background: var(--ground); padding-block: 8px; z-index: 5; border-bottom: 1px solid var(--rule); }
-.controls label { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); font-size: 13px; }
-select, input[type=range] { font: 13px var(--sans); color: var(--ink); background: var(--panel); border: 1px solid var(--rule); border-radius: 4px; padding: 3px 6px; max-width: 100%; }
-.seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 4px; overflow: hidden; }
-.seg button { font: 13px var(--sans); border: 0; background: var(--panel); color: var(--muted); padding: 4px 10px; cursor: pointer; }
-.seg button[aria-pressed="true"] { background: var(--accent-soft); color: var(--ink); }
-button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--muted); }
-.legend span { display: inline-flex; gap: 5px; align-items: center; }
-.legend i { width: 16px; height: 2px; display: inline-block; }
-.main { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 18px; align-items: start; }
+body { background: var(--ground); color: var(--ink); font: 14px/1.45 system-ui, sans-serif; margin: 0; }
+.wrap { padding: 20px; display: grid; gap: 16px; max-width: 1600px; margin: 0 auto; }
+h1 { font-size: 20px; margin: 0; }
+h1 code { font: 18px var(--mono); color: var(--accent); }
+.stats { display: flex; flex-wrap: wrap; gap: 28px; }
+.stat small { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.stat b { font: 500 22px var(--mono); }
+.good { color: var(--good); }
+.warn { border-left: 3px solid var(--warn); padding: 8px 12px; background: var(--panel); font: 12px var(--mono); white-space: pre-wrap; }
+.controls { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; color: var(--muted); }
+.legend { display: flex; gap: 12px; font-size: 12px; }
+.legend i { width: 16px; height: 2px; display: inline-block; margin-right: 4px; vertical-align: middle; }
+.main { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; align-items: start; }
 @media (max-width: 900px) { .main { grid-template-columns: minmax(0, 1fr); } }
-.panel { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; }
-.panel + .panel { margin-top: 14px; }
-.panel header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 16px; padding: 8px 12px; border-bottom: 1px solid var(--rule); }
-.panel header h2 { font-size: 13px; font-weight: 600; margin: 0; }
-.panel header span { font: 12px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.panel { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; margin-bottom: 14px; }
+.panel header { display: flex; justify-content: space-between; flex-wrap: wrap; padding: 8px 12px; border-bottom: 1px solid var(--rule); }
+.panel header span { font: 12px var(--mono); color: var(--muted); }
 .scroll { overflow-x: auto; }
 svg text { font-family: var(--mono); }
-.details { position: sticky; top: 70px; padding: 12px 14px; font-size: 13px; display: grid; gap: 10px; }
-.details h3 { margin: 0; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
-.details code { font: 13px var(--mono); overflow-wrap: anywhere; }
-.details ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
-.details li { font-size: 12px; line-height: 1.35; }
-.details li code { font-size: 12px; }
-.details .why { color: var(--muted); }
-.empty { color: var(--muted); }
-details.log summary { cursor: pointer; color: var(--muted); }
-details.log pre { font: 12px var(--mono); white-space: pre-wrap; margin: 6px 0 0; }
 .node { cursor: pointer; }
-.node:focus-visible rect.mark { stroke: var(--accent); stroke-width: 2; }
-@media (prefers-reduced-motion: no-preference) { .edge, .node { transition: opacity .12s; } }
+.details { position: sticky; top: 16px; padding: 12px 14px; font-size: 13px; display: grid; gap: 10px; }
+.details h3 { margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 500; }
+.details code { font: 12px var(--mono); overflow-wrap: anywhere; }
+.details ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 12px; }
+.muted { color: var(--muted); }
 </style>
 <div class="wrap">
-  <div>
-    <h1>Dependency graph of <code id="src"></code></h1>
-    <p class="sub">Each block's instructions before and after atlas-opt, placed at the cycle they issue. Cycle totals come from the rtl-match timing model.</p>
-  </div>
+  <h1>Dependency graph of <code id="src"></code></h1>
   <div class="stats" id="stats"></div>
   <div id="warnings"></div>
-  <div class="engines" id="engines"></div>
-  <details class="log"><summary>Pass log</summary><pre id="log"></pre></details>
   <div class="controls">
-    <label for="block">Block <select id="block"></select></label>
-    <span class="seg" role="group" aria-label="Layout">
-      <button type="button" id="lay-time" aria-pressed="true">Timeline</button>
-      <button type="button" id="lay-layer" aria-pressed="false">Dependency layers</button>
-    </span>
-    <label for="zoom">Zoom <input type="range" id="zoom" min="1" max="40" step="0.5" value="6"></label>
-    <label for="implied"><input type="checkbox" id="implied"> Show implied edges</label>
+    <label>Block <select id="block"></select></label>
+    <label>Zoom <input type="range" id="zoom" min="1" max="40" step="0.5"></label>
     <span class="legend" id="legend"></span>
   </div>
   <div class="main">
     <div>
-      <section class="panel"><header><h2>Before (as written)</h2><span id="len-before"></span></header><div class="scroll" id="view-before"></div></section>
-      <section class="panel"><header><h2>After atlas-opt</h2><span id="len-after"></span></header><div class="scroll" id="view-after"></div></section>
+      <section class="panel"><header><b>Before (as written)</b><span id="len-before"></span></header><div class="scroll" id="view-before"></div></section>
+      <section class="panel"><header><b>After atlas-opt</b><span id="len-after"></span></header><div class="scroll" id="view-after"></div></section>
     </div>
-    <aside class="panel details" id="details" aria-live="polite"><span class="empty">Select an instruction to see what it waits for and what waits for it.</span></aside>
+    <aside class="panel details" id="details"></aside>
   </div>
 </div>
 <script>
 const DATA = __DATA__;
 const ENGINES = ["Scalar", "LSU", "MXU0", "MXU1", "VPU", "XLU", "DMA"];
 const KINDS = ["RAW", "WAR", "WAW", "rule", "order"];
-const KIND_TEXT = ["read after write", "write after read", "write after write", "hardware rule", "ordering"];
 const NS = "http://www.w3.org/2000/svg";
 const $ = id => document.getElementById(id);
-const state = { block: 0, layout: "time", implied: false, zoom: 6, selected: null };
+const fmt = n => n.toLocaleString("en-US");
+const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const state = { block: 0, zoom: 6, selected: null };
+const panels = {};
+const HINT = `<span class="muted">Select an instruction to see what it waits for and what waits for it.</span>`;
 
 function el(tag, attrs, parent, text) {
   const e = document.createElementNS(NS, tag);
   for (const k in attrs) e.setAttribute(k, attrs[k]);
   if (text !== undefined) e.textContent = text;
-  if (parent) parent.appendChild(e);
+  parent.appendChild(e);
   return e;
 }
-const fmt = n => n.toLocaleString("en-US");
 
-function renderSummary() {
-  $("src").textContent = DATA.source;
-  const b = DATA.before, a = DATA.after;
-  const speed = a.cycles > 0 ? b.cycles / a.cycles : 1;
-  const stats = [
-    ["Cycles before", fmt(b.cycles), ""],
-    ["Cycles after", fmt(a.cycles), a.cycles < b.cycles ? "good" : ""],
-    ["Speedup", speed.toFixed(2) + "<small>×</small>", speed > 1 ? "good" : ""],
-    ["Instructions issued", fmt(b.issued) + " <small>→</small> " + fmt(a.issued), ""],
-    ["Delays issued", fmt(b.delays) + " <small>→</small> " + fmt(a.delays), ""],
-  ];
-  $("stats").innerHTML = stats.map(([l, v, c]) => `<div class="stat"><div class="label">${l}</div><div class="value ${c}">${v}</div></div>`).join("");
-  const w = [];
-  if (a.violations.length) w.push("The optimized program breaks timing rules:\n" + a.violations.join("\n"));
-  if (b.violations.length) w.push("The original program already breaks timing rules:\n" + b.violations.join("\n"));
-  if (a.stop) w.push("Simulation of the optimized program stopped: " + a.stop);
-  $("warnings").innerHTML = w.map(t => `<div class="warn">${escapeHtml(t).replace(/\n/g, "<br>")}</div>`).join("");
-  let rows = `<span class="hdr">Engine busy</span><span class="hdr">before</span><span class="hdr">after</span>`;
-  ENGINES.forEach((name, i) => {
-    const pb = b.cycles ? (b.busy[name] || 0) / b.cycles : 0, pa = a.cycles ? (a.busy[name] || 0) / a.cycles : 0;
-    if (!pb && !pa) return;
-    const bar = p => `<span class="bar"><i style="width:${(p * 100).toFixed(1)}%;background:var(--e${i})"></i><b>${(p * 100).toFixed(0)}%</b></span>`;
-    rows += `<span class="eng"><span class="dot" style="background:var(--e${i})"></span>${name}</span>${bar(pb)}${bar(pa)}`;
-  });
-  $("engines").innerHTML = rows;
-  $("log").textContent = DATA.log.join("\n");
-  $("legend").innerHTML = KINDS.map((k, i) => `<span title="${KIND_TEXT[i]}"><i style="background:var(--k${i})"></i>${k}</span>`).join("");
-  const sel = $("block");
-  DATA.blocks.forEach((blk, i) => {
-    const o = document.createElement("option");
-    o.value = i;
-    o.textContent = `${blk.name}: ${fmt(blk.before.length)} → ${fmt(blk.after.length)} cycles`;
-    sel.appendChild(o);
-  });
-  let best = 0;
-  DATA.blocks.forEach((blk, i) => { const g = blk.before.length - blk.after.length, bg = DATA.blocks[best].before.length - DATA.blocks[best].after.length; if (g > bg) best = i; });
-  state.block = best;
-  sel.value = best;
-}
-
-function escapeHtml(s) { return s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
-const mnemonic = text => text.split(" ")[0];
-
-// Timeline: x is the issue cycle, one lane per engine; overlapping instructions stack in sub-rows.
-function layoutTimeline(g, lanesUsed, ppc) {
-  const LEFT = 64, ROW = 18, LANE_PAD = 8, TOP = 26;
-  const rowsPerLane = ENGINES.map(() => []);
-  const pos = g.nodes.map(([text, line, eng, cycle, done]) => {
-    const x = LEFT + cycle * ppc;
-    const barEnd = x + Math.max(3, (done + 1) * ppc);
-    const labelEnd = x + 6 + mnemonic(text).length * 7.2;
-    const rows = rowsPerLane[eng];
-    let r = rows.findIndex(end => end + 3 <= x);
-    if (r < 0) { r = rows.length; rows.push(0); }
-    rows[r] = Math.max(barEnd, labelEnd);
+// One lane per engine; instructions whose bars would overlap stack in sub-rows.
+function layout(g, lanesUsed, ppc) {
+  const LEFT = 64, ROW = 18, PAD = 8;
+  const rows = ENGINES.map(() => []);
+  const pos = g.nodes.map(([text, , eng, cycle, done]) => {
+    const x = LEFT + cycle * ppc, barEnd = x + Math.max(3, (done + 1) * ppc);
+    const end = Math.max(barEnd, x + 6 + text.split(" ")[0].length * 7.2);
+    let r = rows[eng].findIndex(e => e + 3 <= x);
+    if (r < 0) r = rows[eng].push(0) - 1;
+    rows[eng][r] = end;
     return { x, row: r, eng, barEnd };
   });
-  const laneTop = [];
-  let y = TOP;
-  ENGINES.forEach((_, i) => {
-    laneTop[i] = y;
-    if (lanesUsed[i]) y += Math.max(1, rowsPerLane[i].length, lanesUsed[i]) * ROW + LANE_PAD * 2;
-  });
-  pos.forEach(p => { p.y = laneTop[p.eng] + LANE_PAD + p.row * ROW + ROW / 2; });
-  return { pos, laneTop, height: y + 6, left: LEFT, rows: rowsPerLane.map(r => r.length) };
+  const top = [];
+  let y = 26;
+  ENGINES.forEach((_, i) => { top[i] = y; if (lanesUsed[i]) y += Math.max(1, rows[i].length) * ROW + 2 * PAD; });
+  pos.forEach(p => { p.y = top[p.eng] + PAD + p.row * ROW + ROW / 2; });
+  return { pos, top, height: y + 6, left: LEFT };
 }
 
-// Layers: column = longest chain of dependences leading to the instruction.
-function layoutLayers(g) {
-  const n = g.nodes.length, layer = new Array(n).fill(0);
-  g.edges.forEach(([s, t]) => { layer[t] = Math.max(layer[t], layer[s] + 1); });
-  const COL = 210, ROWH = 26, count = [];
-  const pos = g.nodes.map((_, i) => {
-    const L = layer[i];
-    count[L] = (count[L] || 0) + 1;
-    return { x: 16 + L * COL, y: 16 + (count[L] - 1) * ROWH + 10, w: COL - 34 };
-  });
-  const width = 16 + (Math.max(0, ...layer) + 1) * COL;
-  const height = 16 + Math.max(0, ...count.map(c => c || 0)) * ROWH + 10;
-  return { pos, width, height };
-}
-
-function drawPanel(side, g, other, ppc, lanesUsed) {
-  const host = $("view-" + side);
+function drawPanel(side, g, other, lanesUsed) {
+  const ppc = state.zoom, host = $("view-" + side);
   host.innerHTML = "";
-  const svg = el("svg", { role: "img", "aria-label": `${side} dependency graph` }, host);
+  const L = layout(g, lanesUsed, ppc), maxLen = Math.max(g.length, other.length, 1);
+  const width = L.left + maxLen * ppc + 60;
+  const svg = el("svg", { width, height: L.height, viewBox: `0 0 ${width} ${L.height}` }, host);
   const defs = el("defs", {}, svg);
   KINDS.forEach((_, k) => {
     const m = el("marker", { id: `arrow-${side}-${k}`, viewBox: "0 0 6 6", refX: 5.5, refY: 3, markerWidth: 6, markerHeight: 6, orient: "auto" }, defs);
     el("path", { d: "M0,0 L6,3 L0,6 z", fill: `var(--k${k})` }, m);
   });
-  const gEdges = el("g", {}, svg), gNodes = el("g", {}, svg);
-  let pos, width, height;
-  if (state.layout === "time") {
-    const maxLen = Math.max(g.length, other.length, 1);
-    const L = layoutTimeline(g, lanesUsed, ppc);
-    pos = L.pos; height = L.height; width = L.left + maxLen * ppc + 60;
-    const gGrid = el("g", {}, svg);
-    svg.insertBefore(gGrid, gEdges);
-    const steps = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000];
-    const step = steps.find(s => s * ppc >= 60) || 20000;
-    for (let c = 0; c <= maxLen; c += step) {
-      const x = L.left + c * ppc;
-      el("line", { x1: x, x2: x, y1: 18, y2: height, stroke: "var(--grid)", "stroke-width": 1 }, gGrid);
-      el("text", { x: x + 2, y: 12, "font-size": 10, fill: "var(--faint)" }, gGrid, c);
-    }
-    const endX = L.left + g.length * ppc;
-    el("line", { x1: endX, x2: endX, y1: 18, y2: height, stroke: "var(--accent)", "stroke-width": 1.5, "stroke-dasharray": "4 3" }, gGrid);
-    el("text", { x: endX + 3, y: height - 4, "font-size": 10, fill: "var(--accent)" }, gGrid, "next block");
-    ENGINES.forEach((name, i) => {
-      if (!lanesUsed[i]) return;
-      el("rect", { x: 0, y: L.laneTop[i], width: width, height: 1, fill: "var(--rule)" }, gGrid);
-      el("text", { x: 6, y: L.laneTop[i] + 16, "font-size": 11, fill: `var(--e${i})`, "font-weight": 500 }, gGrid, name);
-    });
-  } else {
-    const L = layoutLayers(g);
-    pos = L.pos; width = L.width; height = L.height;
+  const grid = el("g", {}, svg), edgesG = el("g", {}, svg), nodesG = el("g", {}, svg);
+  const step = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000].find(s => s * ppc >= 60) || 10000;
+  for (let c = 0; c <= maxLen; c += step) {
+    const x = L.left + c * ppc;
+    el("line", { x1: x, x2: x, y1: 18, y2: L.height, stroke: "var(--grid)" }, grid);
+    el("text", { x: x + 2, y: 12, "font-size": 10, fill: "var(--muted)" }, grid, c);
   }
-  svg.setAttribute("width", width);
-  svg.setAttribute("height", height);
-  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
-
-  const edgeEls = [];
-  g.edges.forEach(([s, t, d, kind, why, redundant], ei) => {
-    if (redundant && !state.implied) return;
-    const a = pos[s], b = pos[t];
-    let x1, y1, x2, y2;
-    if (state.layout === "time") { x1 = a.x; y1 = a.y; x2 = b.x; y2 = b.y; }
-    else { x1 = a.x + a.w; y1 = a.y; x2 = b.x; y2 = b.y; }
-    const dx = Math.max(24, Math.abs(x2 - x1) / 2);
-    const p = el("path", {
-      d: `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2 - 1},${y2}`, fill: "none",
-      stroke: `var(--k${kind})`, "stroke-width": 1.2, opacity: redundant ? 0.25 : 0.55,
-      "marker-end": `url(#arrow-${side}-${kind})`, class: "edge" }, gEdges);
-    edgeEls.push({ p, s, t, base: redundant ? 0.25 : 0.55 });
+  const endX = L.left + g.length * ppc;
+  el("line", { x1: endX, x2: endX, y1: 18, y2: L.height, stroke: "var(--accent)", "stroke-dasharray": "4 3" }, grid);
+  el("text", { x: endX + 3, y: L.height - 4, "font-size": 10, fill: "var(--accent)" }, grid, "next block");
+  ENGINES.forEach((name, i) => {
+    if (!lanesUsed[i]) return;
+    el("rect", { x: 0, y: L.top[i], width, height: 1, fill: "var(--rule)" }, grid);
+    el("text", { x: 6, y: L.top[i] + 16, "font-size": 11, fill: `var(--e${i})` }, grid, name);
   });
-
-  const nodeEls = g.nodes.map(([text, line, eng, cycle, done], i) => {
-    const p = pos[i];
-    const node = el("g", { class: "node", tabindex: 0, role: "button", "aria-label": `${text}, issues at cycle ${cycle}` }, gNodes);
-    if (state.layout === "time") {
-      el("rect", { x: p.x, y: p.y - 5, width: Math.max(3, p.barEnd - p.x), height: 10, rx: 2, fill: `var(--e${eng})`, opacity: 0.18 }, node);
-      el("rect", { class: "mark", x: p.x - 1.5, y: p.y - 7, width: 3, height: 14, rx: 1, fill: `var(--e${eng})` }, node);
-      el("text", { x: p.x + 5, y: p.y + 4, "font-size": 11, fill: "var(--ink)" }, node, mnemonic(text));
-    } else {
-      el("rect", { class: "mark", x: p.x, y: p.y - 10, width: p.w, height: 20, rx: 3, fill: "var(--panel)", stroke: `var(--e${eng})` }, node);
-      el("rect", { x: p.x, y: p.y - 10, width: 4, height: 20, rx: 1, fill: `var(--e${eng})` }, node);
-      const label = text.length > 22 ? text.slice(0, 21) + "…" : text;
-      el("text", { x: p.x + 9, y: p.y + 4, "font-size": 11, fill: "var(--ink)" }, node, label);
-      el("text", { x: p.x + p.w - 4, y: p.y + 4, "font-size": 10, fill: "var(--faint)", "text-anchor": "end" }, node, cycle);
-    }
-    el("title", {}, node, `${text}\nline ${line} · cycle ${cycle}`);
-    const choose = () => select(side, i);
-    node.addEventListener("click", choose);
-    node.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); choose(); } });
-    node.addEventListener("mouseenter", () => highlight(side, i));
-    node.addEventListener("mouseleave", () => highlight(side, null));
-    return node;
+  const edges = g.edges.map(([s, t, , kind]) => {
+    const a = L.pos[s], b = L.pos[t], dx = Math.max(24, (b.x - a.x) / 2);
+    const p = el("path", { d: `M${a.x},${a.y} C${a.x + dx},${a.y} ${b.x - dx},${b.y} ${b.x - 1},${b.y}`, fill: "none",
+      stroke: `var(--k${kind})`, "stroke-width": 1.2, opacity: 0.55, "marker-end": `url(#arrow-${side}-${kind})` }, edgesG);
+    return { p, s, t };
   });
-  panels[side] = { g, edgeEls, nodeEls };
+  const nodes = g.nodes.map(([text, line, eng, cycle], i) => {
+    const p = L.pos[i], n = el("g", { class: "node" }, nodesG);
+    el("rect", { x: p.x, y: p.y - 5, width: Math.max(3, p.barEnd - p.x), height: 10, rx: 2, fill: `var(--e${eng})`, opacity: 0.18 }, n);
+    el("rect", { x: p.x - 1.5, y: p.y - 7, width: 3, height: 14, rx: 1, fill: `var(--e${eng})` }, n);
+    el("text", { x: p.x + 5, y: p.y + 4, "font-size": 11, fill: "var(--ink)" }, n, text.split(" ")[0]);
+    el("title", {}, n, `${text}\nline ${line} · cycle ${cycle}`);
+    n.addEventListener("click", () => select(side, i));
+    n.addEventListener("mouseenter", () => highlight(side, i));
+    n.addEventListener("mouseleave", () => highlight(side, null));
+    return n;
+  });
+  panels[side] = { g, edges, nodes };
 }
-
-const panels = {};
 
 function highlight(side, i) {
   const P = panels[side];
   if (i === null && state.selected && state.selected.side === side) i = state.selected.index;
-  P.edgeEls.forEach(e => {
-    const on = i === null || e.s === i || e.t === i;
-    e.p.setAttribute("opacity", i === null ? e.base : on ? 1 : 0.06);
-    e.p.setAttribute("stroke-width", i !== null && on ? 2 : 1.2);
-  });
   const linked = new Set([i]);
-  if (i !== null) P.edgeEls.forEach(e => { if (e.s === i) linked.add(e.t); if (e.t === i) linked.add(e.s); });
-  P.nodeEls.forEach((n, k) => n.setAttribute("opacity", i === null || linked.has(k) ? 1 : 0.3));
+  P.edges.forEach(e => {
+    const on = e.s === i || e.t === i;
+    if (on) linked.add(e.s).add(e.t);
+    e.p.setAttribute("opacity", i === null ? 0.55 : on ? 1 : 0.06);
+    e.p.setAttribute("stroke-width", on ? 2 : 1.2);
+  });
+  P.nodes.forEach((n, k) => n.setAttribute("opacity", i === null || linked.has(k) ? 1 : 0.3));
 }
 
 function select(side, i) {
   state.selected = { side, index: i };
   const g = panels[side].g, [text, line, eng, cycle, done] = g.nodes[i];
-  const otherSide = side === "before" ? "after" : "before";
-  const og = panels[otherSide].g;
-  const twin = og.nodes.findIndex(n => n[0] === text && n[1] === line);
+  const otherSide = side === "before" ? "after" : "before", og = panels[otherSide].g;
+  const twin = og.nodes.findIndex(n => n[0] === text && n[1] === line);  // same instruction in the other panel
   highlight(side, i);
-  if (twin >= 0) highlight(otherSide, twin); else highlight(otherSide, null);
-  const list = (edges, dirFrom) => edges.length ? "<ul>" + edges.map(([s, t, d, k, why]) => {
-    const n = g.nodes[dirFrom ? s : t];
-    return `<li><code>${escapeHtml(n[0])}</code><br><span class="why"><span style="color:var(--k${k})">${KINDS[k]}</span> · ${d} cycle${d === 1 ? "" : "s"} · ${escapeHtml(why)}</span></li>`;
-  }).join("") + "</ul>" : `<span class="empty">none</span>`;
-  const into = g.edges.filter(e => e[1] === i), outOf = g.edges.filter(e => e[0] === i);
-  const otherCycle = twin >= 0 ? og.nodes[twin][3] : null;
+  highlight(otherSide, twin >= 0 ? twin : null);
+  const list = (edges, from) => edges.length ? "<ul>" + edges.map(([s, t, d, k, why]) =>
+    `<li><code>${esc(g.nodes[from ? s : t][0])}</code><br><span class="muted"><span style="color:var(--k${k})">${KINDS[k]}</span> · ${d} cycle${d === 1 ? "" : "s"} · ${esc(why)}</span></li>`
+  ).join("") + "</ul>" : `<span class="muted">none</span>`;
   $("details").innerHTML = `
-    <div><h3>${side === "before" ? "Before" : "After"} · ${ENGINES[eng]}</h3><code>${escapeHtml(text)}</code></div>
-    <div class="why">Source line ${line} · issues at cycle ${cycle} · busy until cycle ${cycle + done}${otherCycle !== null ? ` · cycle ${otherCycle} ${side === "before" ? "after" : "before"} optimization` : ""}</div>
-    <div><h3>Waits for</h3>${list(into, true)}</div>
-    <div><h3>Needed by</h3>${list(outOf, false)}</div>`;
+    <div><h3>${side} · ${ENGINES[eng]}</h3><code>${esc(text)}</code></div>
+    <div class="muted">Line ${line} · issues at cycle ${cycle} · busy until cycle ${cycle + done}</div>
+    <div><h3>Waits for</h3>${list(g.edges.filter(e => e[1] === i), true)}</div>
+    <div><h3>Needed by</h3>${list(g.edges.filter(e => e[0] === i), false)}</div>`;
 }
 
 function render() {
   const blk = DATA.blocks[state.block];
-  if (!blk) return;
   state.selected = null;
-  $("details").innerHTML = `<span class="empty">Select an instruction to see what it waits for and what waits for it.</span>`;
-  $("len-before").textContent = `${fmt(blk.before.length)} cycles · ${blk.before.nodes.length} instructions`;
-  $("len-after").textContent = `${fmt(blk.after.length)} cycles · ${blk.after.nodes.length} instructions · critical path ${fmt(blk.lb)}`;
-  const lanes = ENGINES.map((_, i) => 0);
+  $("details").innerHTML = HINT;
+  $("len-before").textContent = `${fmt(blk.before.length)} cycles`;
+  $("len-after").textContent = `${fmt(blk.after.length)} cycles · critical path ${fmt(blk.lb)}`;
+  const lanes = ENGINES.map(() => 0);
   [blk.before, blk.after].forEach(g => g.nodes.forEach(n => { lanes[n[2]] = 1; }));
-  drawPanel("before", blk.before, blk.after, state.zoom, lanes);
-  drawPanel("after", blk.after, blk.before, state.zoom, lanes);
-  $("zoom").disabled = state.layout !== "time";
+  drawPanel("before", blk.before, blk.after, lanes);
+  drawPanel("after", blk.after, blk.before, lanes);
 }
 
 function fitZoom() {
@@ -501,18 +343,28 @@ function fitZoom() {
   $("zoom").value = state.zoom;
 }
 
-renderSummary();
+const b = DATA.before, a = DATA.after;
+$("src").textContent = DATA.source;
+$("stats").innerHTML = [
+  ["Cycles", `${fmt(b.cycles)} → ${fmt(a.cycles)}`],
+  ["Speedup", `<span class="good">${(b.cycles / Math.max(1, a.cycles)).toFixed(2)}×</span>`],
+  ["Instructions issued", `${fmt(b.issued)} → ${fmt(a.issued)}`],
+  ["Delays issued", `${fmt(b.delays)} → ${fmt(a.delays)}`],
+].map(([l, v]) => `<div class="stat"><small>${l}</small><b>${v}</b></div>`).join("");
+if (a.problems.length) $("warnings").innerHTML = `<div class="warn">The optimized program breaks timing rules:\n${esc(a.problems.join("\n"))}</div>`;
+$("legend").innerHTML = KINDS.map((k, i) => `<span><i style="background:var(--k${i})"></i>${k}</span>`).join("");
+DATA.blocks.forEach((blk, i) => {
+  const o = document.createElement("option");
+  o.value = i;
+  o.textContent = `${blk.name}: ${fmt(blk.before.length)} → ${fmt(blk.after.length)} cycles`;
+  $("block").appendChild(o);
+  if (blk.before.length - blk.after.length > DATA.blocks[state.block].before.length - DATA.blocks[state.block].after.length) state.block = i;
+});
+$("block").value = state.block;
 fitZoom();
 render();
 $("block").addEventListener("change", e => { state.block = +e.target.value; fitZoom(); render(); });
 $("zoom").addEventListener("input", e => { state.zoom = +e.target.value; render(); });
-$("implied").addEventListener("change", e => { state.implied = e.target.checked; render(); });
-["time", "layer"].forEach(k => $("lay-" + k).addEventListener("click", () => {
-  state.layout = k;
-  $("lay-time").setAttribute("aria-pressed", k === "time");
-  $("lay-layer").setAttribute("aria-pressed", k === "layer");
-  render();
-}));
 </script>
 )HTML";
 
@@ -522,9 +374,7 @@ std::string renderHtml(const ProgramView& view) {
     writeSim(o, view.before);
     o << ",\"after\":";
     writeSim(o, view.after);
-    o << ",\"log\":[";
-    for (size_t i = 0; i < view.log.size(); i++) o << (i ? "," : "") << js(view.log[i]);
-    o << "],\"blocks\":[";
+    o << ",\"blocks\":[";
     for (size_t b = 0; b < view.blocks.size(); b++) {
         const BlockView& bv = view.blocks[b];
         o << (b ? "," : "") << "{\"name\":" << js(bv.name) << ",\"lb\":" << bv.lowerBound << ",\"before\":";
@@ -535,13 +385,10 @@ std::string renderHtml(const ProgramView& view) {
     }
     o << "]}";
 
+    std::string title = view.source.substr(view.source.find_last_of('/') + 1);
+    std::replace(title.begin(), title.end(), '<', '_');
     std::string page = kPage;
-    std::string title = view.source;
-    size_t slash = title.find_last_of('/');
-    if (slash != std::string::npos) title = title.substr(slash + 1);
-    std::string escapedTitle;
-    for (char c : title) escapedTitle += (c == '<' || c == '>' || c == '&') ? '_' : c;
-    page.replace(page.find("__TITLE__"), 9, escapedTitle + " schedule graph");
+    page.replace(page.find("__TITLE__"), 9, title + " schedule graph");
     page.replace(page.find("__DATA__"), 8, o.str());
     return page;
 }

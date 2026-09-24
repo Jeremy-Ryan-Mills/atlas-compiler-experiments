@@ -87,11 +87,6 @@ const OpInfo* findOp(const std::string& name) {
     return it == byName.end() ? nullptr : it->second;
 }
 
-const char* engineName(Engine e) {
-    static const char* names[] = {"Scalar", "LSU", "MXU0", "MXU1", "VPU", "XLU", "DMA"};
-    return names[(int)e];
-}
-
 bool isControlFlow(const OpInfo& op) { return op.opClass == OpClass::Branch || op.opClass == OpClass::Jump; }
 
 // ---------------------------------------------------------------- helpers
@@ -139,17 +134,15 @@ static bool isLabelName(const std::string& s) {
     return true;
 }
 
-// Parses an integer the way Python's int(text, 0) does: 12, -3, 0x1f, 0b101, 0o17.
+// Parses a decimal, 0x hex or 0b binary integer, with an optional sign.
 static bool parseInt(const std::string& text, long long& value) {
     std::string s = lower(text);
-    s.erase(std::remove(s.begin(), s.end(), '_'), s.end());
     size_t i = 0;
     bool negative = false;
     if (i < s.size() && (s[i] == '-' || s[i] == '+')) negative = s[i++] == '-';
     int base = 10;
     if (s.compare(i, 2, "0x") == 0) base = 16, i += 2;
     else if (s.compare(i, 2, "0b") == 0) base = 2, i += 2;
-    else if (s.compare(i, 2, "0o") == 0) base = 8, i += 2;
     if (i >= s.size()) return false;
     long long v = 0;
     for (; i < s.size(); i++) {
@@ -170,16 +163,8 @@ static long long parseImm(const std::string& tok, std::string* text = nullptr) {
 }
 
 static int parseXReg(const std::string& tok) {
-    static const std::map<std::string, int> abi = {
-        {"zero", 0}, {"ra", 1}, {"sp", 2}, {"gp", 3}, {"tp", 4}, {"t0", 5}, {"t1", 6}, {"t2", 7},
-        {"s0", 8}, {"fp", 8}, {"s1", 9}, {"a0", 10}, {"a1", 11}, {"a2", 12}, {"a3", 13}, {"a4", 14},
-        {"a5", 15}, {"a6", 16}, {"a7", 17}, {"s2", 18}, {"s3", 19}, {"s4", 20}, {"s5", 21},
-        {"s6", 22}, {"s7", 23}, {"s8", 24}, {"s9", 25}, {"s10", 26}, {"s11", 27}, {"t3", 28},
-        {"t4", 29}, {"t5", 30}, {"t6", 31}};
-    std::string t = lower(tok);
-    if (abi.count(t)) return abi.at(t);
     long long n;
-    if (t.size() > 1 && t[0] == 'x' && parseInt(t.substr(1), n) && n >= 0 && n < 32) return (int)n;
+    if (tok.size() > 1 && tok[0] == 'x' && parseInt(tok.substr(1), n) && n >= 0 && n < 32) return (int)n;
     throw ParseError("expected scalar register, got '" + tok + "'");
 }
 
@@ -256,7 +241,6 @@ AsmProgram parseAsm(const std::string& text, const std::string& fileName) {
     AsmProgram prog;
     prog.labels.emplace_back();
     std::vector<std::pair<int, long long>> numericTargets;  // (instruction index, word offset)
-    std::vector<std::string> pendingComments;
     std::istringstream stream(text);
     std::string raw;
     int lineNo = 0;
@@ -271,10 +255,7 @@ AsmProgram parseAsm(const std::string& text, const std::string& fileName) {
                 prog.labels.back().push_back(trim(line.substr(0, colon)));
                 line = trim(line.substr(colon + 1));
             }
-            if (line.empty()) {
-                if (!comment.empty()) pendingComments.push_back(comment);
-                continue;
-            }
+            if (line.empty()) continue;
             std::vector<std::string> toks = tokenize(line);
             std::string name = lower(toks[0]);
             std::vector<Instr> produced;
@@ -294,7 +275,7 @@ AsmProgram parseAsm(const std::string& text, const std::string& fileName) {
             for (size_t i = 0; i < produced.size(); i++) {
                 Instr& in = produced[i];
                 in.line = lineNo;
-                if (i == 0) in.comment = comment, in.leadingComments.swap(pendingComments);
+                if (i == 0) in.comment = comment;
                 in.keep = in.op->opClass == OpClass::Delay && comment.find("keep") != std::string::npos;
                 prog.instrs.push_back(in);
                 prog.labels.emplace_back();
@@ -357,7 +338,6 @@ std::string printAsm(const AsmProgram& prog) {
             for (const std::string& l : prog.labels[i]) out += l + ":\n";
         if (i == prog.instrs.size()) break;
         const Instr& in = prog.instrs[i];
-        for (const std::string& c : in.leadingComments) out += "# " + c + "\n";
         out += formatInstr(in);
         if (!in.comment.empty()) out += "   # " + in.comment;
         out += "\n";

@@ -1,6 +1,5 @@
 #include "core/blocks.h"
 
-#include <map>
 #include <set>
 
 bool hasDelaySlot(const Block& b) {

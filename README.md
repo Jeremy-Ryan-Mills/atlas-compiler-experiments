@@ -23,8 +23,9 @@ build/atlas-opt kernel.S -o kernel.opt.S --viz kernel.html
 
 After optimizing, atlas-opt simulates the result (at npu_model's DMA speed and with
 slower DMA) and exits with an error if any timing rule is broken. The viewer shows
-each block before and after, either on a cycle timeline (one lane per engine) or by
-dependency depth. Select an instruction to see what it waits for and why.
+each block's dependency graph before and after, with every instruction placed at the
+cycle it issues (one lane per engine). Select an instruction to see what it waits
+for and why.
 
 ## Layout
 
@@ -52,8 +53,8 @@ python -m pytest --atlas-opt=strip-delays     # harness sanity check: everything
 Run it with a Python that has npu_model's dependencies: `uv run pytest` (using this
 repo's `pyproject.toml`), or `~/Projects/npu_model/.venv/bin/python -m pytest`.
 The optimizer is invoked as `<cmd> in.S -o out.S` (settable via `--atlas-opt` /
-`$ATLAS_OPT`, extra flags via `--atlas-opt-args` / `$ATLAS_OPT_ARGS`). Other options:
-`--artifacts-dir DIR` keeps each kernel's `before.S`/`after.S`, `--no-compare-vmem`
-compares DRAM only, `--max-cycles`, `--hardware-config`. A before→after cycle table
-is printed at the end. `SmolVLARmsNormProgram` fails as a BASELINE error: on
-rtl-match, the unmodified kernel already misses its golden output.
+`$ATLAS_OPT`, extra flags via `--atlas-opt-args` / `$ATLAS_OPT_ARGS`).
+`--artifacts-dir DIR` keeps each kernel's `before.S`/`after.S`, and `--max-cycles`
+sets the cycle budget. A before→after cycle table is printed at the end.
+`SmolVLARmsNormProgram` fails as a BASELINE error: on rtl-match, the unmodified
+kernel already misses its golden output.

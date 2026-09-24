@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <deque>
+#include <map>
 
 #include "core/machine.h"
 #include "core/reservations.h"
@@ -75,16 +76,9 @@ SimResult simulate(const AsmProgram& prog, const SimOptions& opt) {
     channelComplete.fill(-1);
     long long lastDmaComplete = 0;
     ReservationTable table;
-    std::map<std::string, long long> busyUntil;
 
     auto violation = [&](const std::string& text) {
         if ((int)r.violations.size() < opt.maxViolations) r.violations.push_back(text);
-    };
-    auto markBusy = [&](const std::string& engine, long long from, long long to) {
-        long long& until = busyUntil[engine];
-        from = std::max(from, until + 1);
-        if (to >= from) r.busyCycles[engine] += to - from + 1;
-        until = std::max(until, to);
     };
 
     long long t = 2;  // npu_model: word 0 is fetched in cycle 1 and issues in cycle 2
@@ -164,7 +158,6 @@ SimResult simulate(const AsmProgram& prog, const SimOptions& opt) {
                             violation(where(in) + " moves data that " + where(a.in) + " is still accessing");
                     }
             }
-            markBusy("DMA", std::max(t, lastDmaComplete + 1), complete);
             dma.push_back({in, f, t, complete});
             lastDmaComplete = complete;
             channelComplete[op.channel] = complete;
@@ -176,8 +169,6 @@ SimResult simulate(const AsmProgram& prog, const SimOptions& opt) {
         table.reserve(in, f, (int)t);
         active.push_back({in, f, t});
         end = std::max(end, t + f.doneAge);
-        if (!isNop(in) && op.opClass != OpClass::Delay && op.engine != Engine::Dma)
-            markBusy(engineName(op.engine), t, t + f.doneAge);
 
         r.issued++;
         if (op.opClass == OpClass::Delay) r.delays++;

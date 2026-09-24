@@ -87,7 +87,7 @@ int main(int argc, char** argv) {
         } else if (vizPath.empty()) {
             std::cout << printAsm(optimized);
         }
-        if (!vizPath.empty() && !writeFile(vizPath, renderHtml(buildProgramView(input, original, code, before, after, ctx.log))))
+        if (!vizPath.empty() && !writeFile(vizPath, renderHtml(buildProgramView(input, original, code, before, after))))
             return 1;
 
         bool bad = !after.violations.empty() || !after.stopReason.empty() || !afterSlow.violations.empty();

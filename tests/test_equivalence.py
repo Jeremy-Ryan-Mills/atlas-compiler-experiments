@@ -32,7 +32,6 @@ def test_optimized_kernel_is_equivalent(
             hardware_config_cls(),
             workdir=workdir,
             max_cycles=pytestconfig.getoption("max_cycles"),
-            compare_vmem=not pytestconfig.getoption("no_compare_vmem"),
         )
     except harness.BaselineError as exc:
         pytest.fail(f"BASELINE (npu_model problem, not the optimizer): {exc}")

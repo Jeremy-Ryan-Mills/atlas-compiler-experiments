@@ -1,7 +1,6 @@
 #include "core/depgraph.h"
 
 #include <algorithm>
-#include <climits>
 #include <map>
 
 namespace {
