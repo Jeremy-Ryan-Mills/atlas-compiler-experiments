@@ -1,6 +1,6 @@
 """
 For every kernel registered in npu_model: run it, optimize it, run it again, and
-require the optimized kernel to leave the same memory state behind.
+require the optimized kernel to leave the same architectural state behind.
 
 The optimizer comes from --atlas-opt / $ATLAS_OPT (see conftest.py).
 """
@@ -32,6 +32,7 @@ def test_optimized_kernel_is_equivalent(
             hardware_config_cls(),
             workdir=workdir,
             max_cycles=pytestconfig.getoption("max_cycles"),
+            live_state=pytestconfig.getoption("live_state"),
         )
     except harness.BaselineError as exc:
         pytest.fail(f"BASELINE (npu_model problem, not the optimizer): {exc}")

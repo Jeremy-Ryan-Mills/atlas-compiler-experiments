@@ -3,14 +3,17 @@ Before/after equivalence harness for Atlas kernel optimizations.
 
 Runs a kernel from `third_party/npu_model` as written, runs it again after an
 optimizer has rewritten its assembly, and compares the architectural state both
-runs leave behind. npu_model (rtl-match) asserts on every RTL scheduling
-violation, so an optimized kernel only passes if its own ordering and `delay`s
-are sufficient.
+runs leave behind: the kernel's DRAM regions, VMEM and every register (see
+`LIVE_STATES`), with both runs starting from the same pseudo-random registers and
+VMEM.
+npu_model (rtl-match) asserts on every RTL scheduling violation, so an optimized
+kernel only passes if its own ordering and `delay`s are sufficient.
 """
 
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import io
 import re
 import shlex
@@ -100,12 +103,32 @@ def discover_kernels() -> list[Kernel]:
 # ---------------------------------------------------------------------------
 
 
+LIVE_STATES = ("all", "dram")
+"""
+What must match after optimization:
+- `all`: every architectural register plus the DRAM regions and VMEM. Right for
+  passes that only reorder, like today's.
+- `dram`: only the DRAM regions, the PLAN.md §0 contract ("only DRAM is live at program exit").
+  Use it once a pass may legitimately leave dead registers or VMEM different.
+"""
+
+INIT_SEED = 42
+"""Both runs start from the same pseudo-random registers and VMEM, so a pass that
+reads a value before it is written is caught instead of hidden by zero init."""
+
+SCRATCH_CSRS = (0xC10, 0xC11)
+"""The software-writable CSRs. 0xC00/0xC01 count cycles/retired instructions and
+0xC03 holds a PC, so they legitimately change when code is rescheduled."""
+
+
 @dataclass
 class RunResult:
     cycles: int
     finished: bool
     regions: dict[str, bytes] = field(default_factory=dict)
-    """Label -> final bytes of each compared memory region."""
+    """Label -> final bytes of each named memory region (DRAM output/inputs, VMEM)."""
+    registers: dict[str, int | bytes] = field(default_factory=dict)
+    """Register name -> final value (bytes for matrix/weight/accumulator tiles)."""
 
 
 def compared_dram_regions(program) -> list[tuple[str, int, int]]:
@@ -122,16 +145,64 @@ def compared_dram_regions(program) -> list[tuple[str, int, int]]:
     return regions
 
 
+def randomize_initial_state(state) -> None:
+    """
+    Make the upcoming `Simulation.run` start from seeded random registers and VMEM.
+    `run` resets the arch state, and that reset randomizes every register file when
+    `randomize_init` is set. Setting it at construction instead would also fill all
+    1 GiB of DRAM (~2.4 s a run), so DRAM keeps npu_model's zeros + loaded inputs.
+
+    The x registers stay 0: atlas-opt relies on the model's reset values for them
+    (`blockEntryValues`), so randomizing them would test a promise it never made.
+    """
+    import torch
+
+    state.cfg = dataclasses.replace(state.cfg, randomize_init=True, init_seed=INIT_SEED)
+    state.vmem.random_(0, 256, generator=torch.Generator().manual_seed(INIT_SEED))
+    reset = state.reset
+
+    def reset_with_zero_x_registers() -> None:
+        reset()
+        state.xrf[:] = [0] * len(state.xrf)
+
+    state.reset = reset_with_zero_x_registers
+
+
+def snapshot_registers(state) -> dict[str, int | bytes]:
+    """Every architectural register except the PC and the timing CSRs."""
+    import torch
+
+    def tile(tensor) -> bytes:
+        return tensor.contiguous().view(-1).view(torch.uint8).numpy().tobytes()
+
+    regs: dict[str, int | bytes] = {
+        "status": state.read_csrf(0xC02),
+        "dma.base": state.base,
+    }
+    regs |= {f"x{i}": v for i, v in enumerate(state.xrf)}
+    regs |= {f"e{i}": int(v) for i, v in enumerate(state.erf)}
+    regs |= {f"csr[{a:#x}]": state.read_csrf(a) for a in SCRATCH_CSRS}
+    regs |= {f"flag{i}": v for i, v in enumerate(state.flags)}
+    regs |= {f"m{i}": tile(t) for i, t in enumerate(state.mrf)}
+    for unit, slots in state.wb.items():
+        regs |= {f"{unit}.w{i}": tile(t) for i, t in enumerate(slots)}
+    for unit, slots in state.acc.items():
+        regs |= {f"{unit}.acc{i}": tile(t) for i, t in enumerate(slots)}
+    return regs
+
+
 def run_program(
     program,
     hardware_config,
     *,
     dram_regions: list[tuple[str, int, int]],
     max_cycles: int,
+    live_state: str = "all",
 ) -> RunResult:
     """
-    Run `program` and snapshot `dram_regions` (from `compared_dram_regions` on the
-    *original* program, so both runs capture the same bytes) plus all of VMEM.
+    Run `program` from `randomize_initial_state` and snapshot DRAM, naming
+    `dram_regions` (from `compared_dram_regions` on the *original* program, so both
+    runs capture the same bytes). With `live_state="all"`, also VMEM and registers.
     """
     from npu_model.logging import LoggerConfig
     from npu_model.simulation import Simulation
@@ -144,6 +215,7 @@ def run_program(
             verbose=False,
         )
         try:
+            randomize_initial_state(sim.core.arch_state)
             with contextlib.redirect_stdout(io.StringIO()):
                 sim.run(max_cycles=max_cycles)
             state = sim.core.arch_state
@@ -152,28 +224,62 @@ def run_program(
             # the kernel may have left pointing somewhere else.
             for label, base, length in dram_regions:
                 result.regions[label] = state.dram[base : base + length].numpy().tobytes()
-            result.regions["vmem"] = state.vmem.numpy().tobytes()
+            if live_state == "all":
+                result.regions["vmem"] = state.vmem.numpy().tobytes()
+                result.registers = snapshot_registers(state)
             return result
         finally:
             sim.close()
 
 
+def _mismatch(label: str, expected, actual) -> str:
+    """'<label>: N/M bytes differ, first at +off (before=.., after=..)' for tensors."""
+    import torch
+
+    mismatched = torch.nonzero(expected != actual).flatten()
+    first = int(mismatched[0])
+    return (
+        f"{label}: {len(mismatched)}/{len(expected)} bytes differ, "
+        f"first at +{first:#x} (before={int(expected[first]):#04x}, "
+        f"after={int(actual[first]):#04x})"
+    )
+
+
+MAX_REGISTER_DIFFS = 10
+
+
 def diff_regions(before: RunResult, after: RunResult) -> list[str]:
-    """Human-readable description of every region that differs."""
+    """Human-readable description of every region and register that differs."""
+    import torch
+
+    def as_tensor(data: bytes):
+        return torch.frombuffer(bytearray(data), dtype=torch.uint8)
+
     problems = []
     for label, expected in before.regions.items():
         actual = after.regions.get(label)
         if actual is None:
             problems.append(f"{label}: missing from optimized run")
-            continue
+        elif actual != expected:
+            problems.append(_mismatch(label, as_tensor(expected), as_tensor(actual)))
+
+    changed = []
+    for name, expected in before.registers.items():
+        actual = after.registers.get(name)
         if actual == expected:
             continue
-        mismatched = [i for i, (a, b) in enumerate(zip(expected, actual)) if a != b]
-        first = mismatched[0]
+        if isinstance(expected, bytes) and isinstance(actual, bytes):
+            count = sum(a != b for a, b in zip(expected, actual))
+            changed.append(f"{name} ({count}/{len(expected)} bytes)")
+        elif isinstance(expected, bool) or isinstance(actual, bool):
+            changed.append(f"{name} ({expected} -> {actual})")
+        else:
+            changed.append(f"{name} ({expected:#x} -> {actual:#x})")
+    if changed:
+        shown = ", ".join(changed[:MAX_REGISTER_DIFFS])
+        more = len(changed) - MAX_REGISTER_DIFFS
         problems.append(
-            f"{label}: {len(mismatched)}/{len(expected)} bytes differ, "
-            f"first at +{first:#x} (before={expected[first]:#04x}, "
-            f"after={actual[first]:#04x})"
+            f"registers differ: {shown}" + (f", and {more} more" if more > 0 else "")
         )
     return problems
 
@@ -284,21 +390,28 @@ def check_equivalence(
     *,
     workdir: Path,
     max_cycles: int,
+    live_state: str = "all",
 ) -> tuple[RunResult, RunResult]:
     """
     Run `kernel`, optimize it, run the result, and return (before, after).
 
     Raises `BaselineError` if the original kernel is broken, `OptimizerError` if
     the optimizer fails, and `EquivalenceError` if the optimized kernel doesn't
-    assemble, errors in the simulator, doesn't finish, or leaves different bytes
-    in any compared region. `workdir` keeps before.S / after.S for debugging.
+    assemble, errors in the simulator, doesn't finish, or ends in a different
+    state (see `LIVE_STATES`). `workdir` keeps before.S / after.S for debugging.
     """
     program = kernel.program()
     max_cycles = getattr(program, "kernel_max_cycles", max_cycles)
     dram_regions = compared_dram_regions(program)
 
     def run(prog) -> RunResult:
-        return run_program(prog, hardware_config, dram_regions=dram_regions, max_cycles=max_cycles)
+        return run_program(
+            prog,
+            hardware_config,
+            dram_regions=dram_regions,
+            max_cycles=max_cycles,
+            live_state=live_state,
+        )
 
     before = run(program)
     if not before.finished:

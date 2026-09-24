@@ -36,6 +36,15 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="Cycle budget per run (a kernel's own `kernel_max_cycles` wins).",
     )
     group.addoption(
+        "--live-state",
+        choices=harness.LIVE_STATES,
+        default="all",
+        help=(
+            "State that must match after optimization: `all` (every register, DRAM "
+            "and VMEM) or `dram` (PLAN.md: only DRAM is live at exit)."
+        ),
+    )
+    group.addoption(
         "--artifacts-dir",
         type=Path,
         default=None,

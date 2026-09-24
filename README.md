@@ -41,8 +41,14 @@ for and why.
 `tests/` also has a pytest harness that runs every kernel registered in
 `third_party/npu_model` (a submodule on its `rtl-match` branch) before and after
 optimization. It fails if the optimized kernel errors (e.g. breaks a timing rule),
-doesn't finish, or leaves different bytes in the kernel's DRAM output, its DRAM
-inputs, or VMEM.
+doesn't finish, or ends in a different architectural state: any byte of the
+kernel's DRAM output, its DRAM inputs or VMEM, or any register (`x`, `e`, matrix,
+MXU weight and accumulator registers, flags, `dma.base`, the halt status and the
+scratch CSRs). The PC and the cycle/instret counters are left out, since
+rescheduling changes them. Both runs start from the same seeded random registers
+and VMEM (`x` registers stay 0, the reset state atlas-opt assumes), so reading a
+value before it is written is caught. `--live-state=dram` compares only the DRAM regions, the PLAN.md §0 contract, for
+passes that may leave dead registers or VMEM different.
 
 ```sh
 python -m pytest                              # uses build/atlas-opt if it exists

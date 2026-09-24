@@ -94,9 +94,10 @@ int main(int argc, char** argv) {
         if (!quiet || bad) {
             for (const std::string& line : ctx.log) std::cerr << "  " << line << "\n";
             char buf[512];
-            std::snprintf(buf, sizeof buf, "%s: %lld -> %lld cycles (%.2fx), %lld -> %lld instructions issued\n",
+            std::snprintf(buf, sizeof buf,
+                          "%s: %lld -> %lld cycles (%.2fx), %lld -> %lld instructions issued, DMA busy %lld cycles\n",
                           input.c_str(), before.cycles, after.cycles, (double)before.cycles / std::max(1LL, after.cycles),
-                          before.issued, after.issued);
+                          before.issued, after.issued, after.dmaBusy);
             std::cerr << buf;
         }
         printProblems("output", after);

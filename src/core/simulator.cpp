@@ -142,6 +142,7 @@ SimResult simulate(const AsmProgram& prog, const SimOptions& opt) {
             if (op.opClass != OpClass::DmaConfig) bytes = regs[in.rs2] ? *regs[in.rs2] : 0;
             long long latency = (long long)std::ceil(dmaTransferCycles(bytes) * opt.dmaLatencyScale);
             complete = std::max(t + latency - 1, lastDmaComplete + latency);  // one transfer at a time, in order
+            r.dmaBusy += latency;
             if (const Access* range = dmaVmem(f)) {
                 for (const QueuedDma& d : dma) {
                     const Access* other = dmaVmem(d.f);
