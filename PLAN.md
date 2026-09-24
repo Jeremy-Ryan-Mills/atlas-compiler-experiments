@@ -26,15 +26,16 @@ Sources surveyed on `rtl-match`: `npu_spec/00–06`, `docs/rtl-timing.md`,
 Built, using only the conservative choices from [OPEN_QUESTIONS.md](OPEN_QUESTIONS.md):
 parser/printer, row-timed access profiles for every rtl-match instruction,
 dependency graph, reservation table, list scheduler with the robust `dma.wait`
-rule, passes P0 (`strip-artifacts`), P3 (`fill-delay-slots`) and P2 (`schedule`),
-a timing simulator/checker, and the before/after HTML viewer.
+rule, passes P0 (`strip-artifacts`), `unroll-loops` (full unrolling of loops with a
+known trip count), P3 (`fill-delay-slots`) and P2 (`schedule`), a timing
+simulator/checker, and the before/after HTML viewer.
 
 Validation (the pytest equivalence harness in `tests/`, on the rtl-match submodule):
-79 of 80 kernels leave identical DRAM output, DRAM inputs and VMEM after
-optimization, with no assertion. The 80th, `SmolVLARmsNormProgram`, already misses its
-golden output unmodified on rtl-match. atlas-opt's predicted cycles matched
-npu_model's for every original and optimized kernel. Total ≈ 596k → 543k cycles
-(1.10×); the fused-attention kernels gain 1.32–1.37×.
+all 80 kernels leave identical DRAM output, DRAM inputs, VMEM and registers after
+optimization, with no assertion. atlas-opt's predicted cycles matched npu_model's
+for every original and optimized kernel. Total ≈ 596k → 533k cycles (1.12×); the
+parameterized fused-attention kernels gain 1.40–1.48×. DMA is busy 484.5k of those
+cycles, so 48.6k remain for any reordering (58.8k before `unroll-loops`).
 
 Changes from the plan below: the code is organized as `src/core` (everything about
 programs and the machine), `src/passes` (one file per pass plus a registry; see
@@ -74,7 +75,7 @@ compute side. "Blocked on" names the open question or sign-off each idea needs;
 | Idea | Blocked on |
 |---|---|
 | P7 timing across blocks: stop draining all engines at block ends; carry in-flight state across loop back-edges | — |
-| Fully unroll short loops (many run 2–4 times): removes branch, slot and drain, exposes cross-iteration overlap | — |
+| ~~Fully unroll short loops~~ (done: `unroll-loops`, −10.3k cycles). Overlap across iterations is now limited by the "DMA queue order" edge, which keeps every DMA command in program order because DRAM is not modeled | — |
 | P12 software pipelining: iteration i+1's loads during iteration i's compute | double buffering needs a second VMEM buffer (Q4) |
 | Cross-kernel overlap: the next kernel's loads under the previous kernel's tail | Q3 |
 

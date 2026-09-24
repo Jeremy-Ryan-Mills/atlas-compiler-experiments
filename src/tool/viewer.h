@@ -27,8 +27,8 @@ struct ProgramView {
     SimResult before, after;
 };
 
-// Builds the before/after graphs of every block. `optimized` must have the same
-// blocks as `original` (the passes keep the block structure).
+// Builds the before/after graphs of every optimized block. Each is paired with the
+// original blocks its instructions came from (several, if a pass merged blocks).
 ProgramView buildProgramView(const std::string& source, const AsmProgram& original, const Code& optimized,
                              const SimResult& before, const SimResult& after);
 

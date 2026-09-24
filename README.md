@@ -62,5 +62,3 @@ The optimizer is invoked as `<cmd> in.S -o out.S` (settable via `--atlas-opt` /
 `$ATLAS_OPT`, extra flags via `--atlas-opt-args` / `$ATLAS_OPT_ARGS`).
 `--artifacts-dir DIR` keeps each kernel's `before.S`/`after.S`, and `--max-cycles`
 sets the cycle budget. A before→after cycle table is printed at the end.
-`SmolVLARmsNormProgram` fails as a BASELINE error: on rtl-match, the unmodified
-kernel already misses its golden output.

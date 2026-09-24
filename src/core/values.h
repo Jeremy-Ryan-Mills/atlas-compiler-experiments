@@ -19,6 +19,9 @@ std::optional<uint32_t> aluResult(const Instr& in, const RegValues& regs);
 // Updates `regs` with the scalar register written by `in` (if any).
 void applyScalar(const Instr& in, RegValues& regs);
 
+// Whether conditional branch `in` is taken, or nullopt if an operand is unknown.
+std::optional<bool> branchTaken(const Instr& in, const RegValues& regs);
+
 // Register values known at the start of each block, by forward constant
 // propagation over the control-flow graph. The program starts with all registers 0.
 std::vector<RegValues> blockEntryValues(const Code& code);

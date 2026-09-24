@@ -58,6 +58,18 @@ void applyScalar(const Instr& in, RegValues& regs) {
     regs[in.rd] = c == OpClass::Alu ? aluResult(in, regs) : std::nullopt;
 }
 
+std::optional<bool> branchTaken(const Instr& in, const RegValues& regs) {
+    if (!regs[in.rs1] || !regs[in.rs2]) return std::nullopt;
+    uint32_t a = *regs[in.rs1], b = *regs[in.rs2];
+    const std::string& n = in.op->name;
+    if (n == "beq") return a == b;
+    if (n == "bne") return a != b;
+    if (n == "blt") return (int32_t)a < (int32_t)b;
+    if (n == "bge") return (int32_t)a >= (int32_t)b;
+    if (n == "bltu") return a < b;
+    return a >= b;  // bgeu
+}
+
 static bool mergeInto(RegValues& into, const RegValues& from) {
     bool changed = false;
     for (int r = 1; r < 32; r++)

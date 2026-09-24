@@ -47,19 +47,6 @@ bool overlapCycles(const Access& a, long long issue, const Access& range, long l
     return true;
 }
 
-bool evaluateBranch(const Instr& in, const RegValues& regs, bool& taken) {
-    if (!regs[in.rs1] || !regs[in.rs2]) return false;
-    uint32_t a = *regs[in.rs1], b = *regs[in.rs2];
-    const std::string& n = in.op->name;
-    if (n == "beq") taken = a == b;
-    else if (n == "bne") taken = a != b;
-    else if (n == "blt") taken = (int32_t)a < (int32_t)b;
-    else if (n == "bge") taken = (int32_t)a >= (int32_t)b;
-    else if (n == "bltu") taken = a < b;
-    else taken = a >= b;  // bgeu
-    return true;
-}
-
 }  // namespace
 
 SimResult simulate(const AsmProgram& prog, const SimOptions& opt) {
@@ -182,9 +169,13 @@ SimResult simulate(const AsmProgram& prog, const SimOptions& opt) {
             inSlot = false;
         } else if (isControlFlow(op)) {
             bool taken = true;
-            if (op.opClass == OpClass::Branch && !evaluateBranch(in, regs, taken)) {
-                r.stopReason = where(in) + ": branch depends on a value the simulator does not know";
-                break;
+            if (op.opClass == OpClass::Branch) {
+                std::optional<bool> known = branchTaken(in, regs);
+                if (!known) {
+                    r.stopReason = where(in) + ": branch depends on a value the simulator does not know";
+                    break;
+                }
+                taken = *known;
             }
             if (taken) {
                 if (op.name == "jalr") {

@@ -72,19 +72,39 @@ ProgramView buildProgramView(const std::string& source, const AsmProgram& origin
     std::vector<RegValues> entryOpt = blockEntryValues(optimized);
     uint32_t dmaRegs = dmaOperandRegisters(original.instrs);
 
-    for (size_t bi = 0; bi < orig.blocks.size() && bi < optimized.blocks.size(); bi++) {
-        const Block& ob = orig.blocks[bi];
-        BlockView bv;
-        bv.name = ob.labels.empty() ? "block " + std::to_string(bi) : ob.labels[0];
-        if (bi == 0 && ob.labels.empty()) bv.name = "entry";
+    // Passes may merge blocks (e.g. unroll-loops), so pair each optimized block with the
+    // original blocks its instructions came from, found by source line.
+    std::vector<int> blockOfLine;
+    for (size_t bi = 0; bi < orig.blocks.size(); bi++)
+        for (const Instr& in : blockInstructions(orig.blocks[bi])) {
+            if (in.line >= (int)blockOfLine.size()) blockOfLine.resize(in.line + 1, -1);
+            blockOfLine[in.line] = (int)bi;
+        }
 
-        std::vector<Instr> seq = blockInstructions(ob);
+    for (size_t bi = 0; bi < optimized.blocks.size(); bi++) {
+        const Block& nb = optimized.blocks[bi];
+        std::vector<int> sources;
+        for (const Instr& in : blockInstructions(nb))
+            if (in.line > 0 && in.line < (int)blockOfLine.size() && blockOfLine[in.line] >= 0)
+                sources.push_back(blockOfLine[in.line]);
+        std::sort(sources.begin(), sources.end());
+        sources.erase(std::unique(sources.begin(), sources.end()), sources.end());
+
+        BlockView bv;
+        int first = sources.empty() ? -1 : sources[0];
+        const Block* ob = first >= 0 ? &orig.blocks[first] : nullptr;
+        bv.name = ob && !ob->labels.empty() ? ob->labels[0] : first == 0 ? "entry" : "block " + std::to_string(bi);
+        if (sources.size() > 1) bv.name += " (+" + std::to_string(sources.size() - 1) + " merged)";
+
+        // Merged blocks show their original blocks back to back, each as written once.
+        std::vector<Instr> seq;
+        for (int s : sources)
+            for (const Instr& in : blockInstructions(orig.blocks[s])) seq.push_back(in);
         std::vector<int> cycles = asWrittenCycles(seq);
         int length = seq.empty() ? 0 : cycles.back() + naturalGap(seq.back());
-        bv.before = makeView(seq, cycles, entryOrig[bi], length, dmaRegs);
+        bv.before = makeView(seq, cycles, first >= 0 ? entryOrig[first] : unknownRegs(), length, dmaRegs);
         bv.lowerBound = criticalPathLength(bv.before.graph);
 
-        const Block& nb = optimized.blocks[bi];
         std::vector<Instr> seq2 = blockInstructions(nb);
         std::vector<int> cycles2 = asWrittenCycles(seq2);
         if (nb.scheduled) {

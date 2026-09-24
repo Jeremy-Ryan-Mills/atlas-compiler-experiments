@@ -181,6 +181,67 @@ TEST(schedules_stay_valid_when_dma_is_slower) {
     }
 }
 
+static int countOps(const AsmProgram& p, const std::string& name) {
+    int n = 0;
+    for (const Instr& in : p.instrs) n += in.op->name == name;
+    return n;
+}
+
+TEST(unroll_loops_runs_the_delay_slot_every_iteration) {
+    // The slot increments x1 after the branch compares it, so the loop runs 4 times.
+    std::string text =
+        "addi x2, x0, 3\n"
+        "loop:\n"
+        "addi x3, x3, 5\n"
+        "blt x1, x2, loop\n"
+        "addi x1, x1, 1\n"
+        "addi x4, x3, 0\n";
+    AsmProgram out = optimize(parseAsm(text), {"strip-artifacts", "unroll-loops"});
+    CHECK_EQ(countOps(out, "blt"), 0);
+    CHECK_EQ(out.instrs.size(), 1u + 4 * 2 + 1);
+    CHECK(simulate(out).violations.empty());
+}
+
+TEST(unroll_loops_unrolls_nested_loops) {
+    std::string text =
+        "addi x2, x0, 2\n"
+        "addi x4, x0, 3\n"
+        "outer:\n"
+        "addi x3, x0, 0\n"
+        "inner:\n"
+        "addi x5, x5, 1\n"
+        "addi x3, x3, 1\n"
+        "blt x3, x4, inner\n"
+        "addi x0, x0, 0\n"
+        "addi x1, x1, 1\n"
+        "blt x1, x2, outer\n"
+        "addi x0, x0, 0\n";
+    AsmProgram in = parseAsm(text);
+    AsmProgram out = optimize(in);
+    CHECK_EQ(countOps(out, "blt"), 0);
+    CHECK_EQ(countOps(out, "addi"), 2 + 2 * (1 + 3 * 2 + 1));  // setup + 2 outer iterations of 3 inner ones
+    CHECK(simulate(out).cycles < simulate(in).cycles);
+}
+
+TEST(unroll_loops_keeps_loops_it_cannot_count) {
+    // The bound comes from memory, and the second loop is also entered by a jump.
+    std::string text =
+        "lw x2, 0(x0)\n"
+        "loop:\n"
+        "addi x1, x1, 1\n"
+        "blt x1, x2, loop\n"
+        "addi x0, x0, 0\n"
+        "addi x3, x0, 2\n"
+        "jal x0, other\n"
+        "addi x0, x0, 0\n"
+        "other:\n"
+        "addi x4, x4, 1\n"
+        "blt x4, x3, other\n"
+        "addi x0, x0, 0\n";
+    AsmProgram out = optimize(parseAsm(text), {"strip-artifacts", "unroll-loops"});
+    CHECK_EQ(countOps(out, "blt"), 2);
+}
+
 TEST(all_rtl_match_kernels) {
     std::filesystem::path dir = std::filesystem::path(ATLAS_SOURCE_DIR) / "third_party/npu_model/npu_model/configs/programs/asm";
     if (!std::filesystem::exists(dir)) {

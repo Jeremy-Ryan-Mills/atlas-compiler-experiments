@@ -7,6 +7,7 @@ const std::vector<Pass>& allPasses() {
     // and delays for whatever the earlier passes produced.
     static const std::vector<Pass> passes = {
         {"strip-artifacts", "remove the old schedule: delays and no-op fillers", stripArtifacts},
+        {"unroll-loops", "fully unroll loops whose trip count is known, so iterations can overlap", unrollLoops},
         {"fill-delay-slots", "move an independent scalar instruction into each empty branch delay slot", fillDelaySlots},
         {"schedule", "list-schedule every block and choose the delays", schedule},
     };

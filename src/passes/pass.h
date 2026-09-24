@@ -26,5 +26,6 @@ void runPasses(Code& code, const std::vector<std::string>& names, PassContext& c
 
 // The passes (one .cpp file each).
 void stripArtifacts(Code& code, PassContext& ctx);
+void unrollLoops(Code& code, PassContext& ctx);
 void fillDelaySlots(Code& code, PassContext& ctx);
 void schedule(Code& code, PassContext& ctx);
