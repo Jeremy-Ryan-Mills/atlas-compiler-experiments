@@ -1,0 +1,28 @@
+[project]
+name = "atlas-compiler-experiments"
+version = "0.1.0"
+description = "Dependency-graph optimization experiments for the Atlas NPU"
+readme = "README.md"
+# Matches third_party/npu_model, which the tests import directly.
+requires-python = ">=3.14"
+dependencies = [
+    "numpy>=2.2.6",
+    "pytest>=8.4.0",
+    "torch>=2.2.0",
+]
+
+[tool.uv]
+package = false
+
+# The simulator only needs CPU torch; skip the multi-GB CUDA wheels.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]

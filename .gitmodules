@@ -1,0 +1,4 @@
+[submodule "third_party/npu_model"]
+	path = third_party/npu_model
+	url = git@github.com:ucb-ee194-tapeout/npu_model.git
+	branch = rtl-match
