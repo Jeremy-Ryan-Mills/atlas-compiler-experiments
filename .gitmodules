@@ -2,3 +2,6 @@
 	path = third_party/npu_model
 	url = git@github.com:ucb-ee194-tapeout/npu_model.git
 	branch = rtl-match
+[submodule "third_party/atlas-npu"]
+	path = third_party/atlas-npu
+	url = git@github.com:ucb-bar/atlas-npu.git
