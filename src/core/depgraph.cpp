@@ -27,21 +27,23 @@ bool overlaps(const Access& x, const Access& y) {
     return x.first < y.first + y.count && y.first < x.first + x.count;
 }
 
+}  // namespace
+
 // Does instruction `f` conflict with what DMA instruction `dma` does at completion?
 bool conflictsAtCompletion(const Footprint& dma, const Footprint& f, EdgeKind& kind) {
     for (const Access& x : dma.accesses) {
         if (!x.atCompletion) continue;
         for (const Access& y : f.accesses) {
-            if (!overlaps(x, y) || (!x.write && !y.write)) continue;
+            // The timing model forbids overlapping queued DMA ranges, including stores.
+            bool queuedVmem = x.res == Res::Vmem && y.atCompletion;
+            if (!overlaps(x, y) || (!x.write && !y.write && !queuedVmem)) continue;
             if (x.res == Res::DmaBase && y.atCompletion) continue;  // the DMA queue keeps these in order
-            kind = x.write && y.write ? EdgeKind::WAW : x.write ? EdgeKind::RAW : EdgeKind::WAR;
+            kind = x.write && y.write ? EdgeKind::WAW : x.write ? EdgeKind::RAW : y.write ? EdgeKind::WAR : EdgeKind::Order;
             return true;
         }
     }
     return false;
 }
-
-}  // namespace
 
 uint32_t dmaOperandRegisters(const std::vector<Instr>& instrs) {
     uint32_t mask = 0;

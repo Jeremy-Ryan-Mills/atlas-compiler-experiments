@@ -28,6 +28,9 @@ DepGraph buildGraph(const std::vector<Instr>& instrs, const RegValues& entry, ui
 
 uint32_t dmaOperandRegisters(const std::vector<Instr>& instrs);
 
+// Conflicts with DMA's completion-time accesses, except FIFO-ordered base updates.
+bool conflictsAtCompletion(const Footprint& dma, const Footprint& other, EdgeKind& kind);
+
 // Longest path (in cycles) from each node until everything after it has finished.
 // The scheduler issues the instructions with the largest height first.
 std::vector<int> criticalHeights(const DepGraph& g);

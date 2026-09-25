@@ -7,6 +7,7 @@
 #include "passes/pass.h"
 
 static int failures = 0, checks = 0;
+static const std::vector<std::string> manualWaitPasses = {"strip-artifacts", "fill-delay-slots", "schedule"};
 #define CHECK(condition) do { ++checks; if (!(condition)) { ++failures; std::printf("FAIL line %d: %s\n", __LINE__, #condition); } } while (0)
 
 // Include unprintable metadata so rejection checks cover all mutable state.
@@ -33,7 +34,7 @@ static std::string snapshot(const Code& code) {
     return out.str();
 }
 
-static void rejectCode(Code code, const std::string& reason, const std::vector<std::string>& passes = {}) {
+static void rejectCode(Code code, const std::string& reason, const std::vector<std::string>& passes = manualWaitPasses) {
     std::string before = snapshot(code);
     PassContext ctx;
     ctx.log.push_back("existing log");
@@ -49,7 +50,7 @@ static void rejectCode(Code code, const std::string& reason, const std::vector<s
 }
 
 static void reject(const std::string& source, const std::string& reason,
-                   const std::vector<std::string>& passes = {}) {
+                   const std::vector<std::string>& passes = manualWaitPasses) {
     rejectCode(buildBlocks(parseAsm(source)), reason, passes);
 }
 

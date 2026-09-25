@@ -36,3 +36,7 @@ add_test(NAME publication-fixed-tests COMMAND publication-fixed-tests)
 add_executable(publication-dma-tests tests/publication_dma_tests.cpp)
 target_link_libraries(publication-dma-tests atlas)
 add_test(NAME publication-dma-tests COMMAND publication-dma-tests)
+
+add_executable(dma-wait-insertion-tests tests/dma_wait_insertion_tests.cpp)
+target_link_libraries(dma-wait-insertion-tests atlas)
+add_test(NAME dma-wait-insertion-tests COMMAND dma-wait-insertion-tests)

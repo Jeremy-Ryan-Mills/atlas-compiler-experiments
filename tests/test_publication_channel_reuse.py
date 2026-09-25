@@ -11,6 +11,7 @@ from tests.test_publication import (
     observe,
     publication_compiler,
     publication_dir,
+    publication_without_dma_insertion,
 )
 
 
@@ -40,7 +41,7 @@ def _observe_status(source, hardware_config_cls, directory, dma_scale):
 @pytest.mark.parametrize('source', [REUSED_CHANNEL, REUSED_LOAD_CHANNEL],
                          ids=['model-config', 'real-load'])
 def test_release_rejects_channel_reuse_hidden_by_fixed_delay(
-    publication_compiler, hardware_config_cls, publication_dir, source
+    publication_without_dma_insertion, hardware_config_cls, publication_dir, source
 ):
     # Fixed delays can hide reuse before the channel's busy flag clears.
     for scale in [1, 10]:
@@ -54,7 +55,7 @@ def test_release_rejects_channel_reuse_hidden_by_fixed_delay(
     assert 'Flag 0 is already set' in slow['message']
 
     try:
-        optimized = publication_compiler(source, publication_dir)
+        optimized = publication_without_dma_insertion(source, publication_dir)
     except harness.OptimizerError as error:
         assert 'atlas.release' in str(error)
         assert 'ch0' in str(error)
@@ -79,12 +80,12 @@ def test_release_accepts_channel_reuse_after_each_matching_wait(
     assert before['vmem'][4096:4128] == after['vmem'][4096:4128] == bytes([0xC3]) * 32
 
 
-def test_unmarked_channel_reuse_retains_legacy_acceptance(
-    publication_compiler, publication_dir
+def test_unmarked_channel_reuse_retains_legacy_acceptance_when_insertion_is_disabled(
+    publication_without_dma_insertion, publication_dir
 ):
     # Legacy acceptance is unchanged; this stream still fails at 100x latency.
     source = REUSED_CHANNEL.replace('# atlas.release', '# progress only')
-    optimized = publication_compiler(source, publication_dir)
+    optimized = publication_without_dma_insertion(source, publication_dir)
     assert 'atlas.release' not in optimized
     assert optimized.count('dma.config.ch0') == 2
     assert 'keep' in optimized

@@ -10,6 +10,7 @@ from tests.test_publication import (
     observe,
     publication_compiler,
     publication_dir,
+    publication_without_dma_insertion,
 )
 
 
@@ -78,7 +79,7 @@ def _must_reject_pending_path(source, compiler, hardware_config_cls, directory, 
 
 @pytest.mark.parametrize('branch_value', [0, 1], ids=['waited-path', 'unwaited-path'])
 def test_release_rejects_join_with_only_one_waited_predecessor(
-    publication_compiler, hardware_config_cls, publication_dir, branch_value
+    publication_without_dma_insertion, hardware_config_cls, publication_dir, branch_value
 ):
     # Reject both inputs: every reaching path needs a matching wait.
     source = (
@@ -87,11 +88,12 @@ def test_release_rejects_join_with_only_one_waited_predecessor(
         'jal x0, publish\nnop\nwaited:\ndma.wait.ch0\n'
         'publish:\ndelay 300\n' + PUBLISH
     )
-    _must_reject_pending_path(source, publication_compiler, hardware_config_cls, publication_dir)
+    _must_reject_pending_path(source, publication_without_dma_insertion,
+                             hardware_config_cls, publication_dir)
 
 
 def test_release_rejects_dma_carried_back_to_entry(
-    publication_compiler, hardware_config_cls, publication_dir
+    publication_without_dma_insertion, hardware_config_cls, publication_dir
 ):
     # First entry is idle; the backedge carries DMA into the second release.
     source = (
@@ -101,5 +103,5 @@ def test_release_rejects_dma_carried_back_to_entry(
         'addi x7, x0, 32\nlui x1, 1\ndma.load.ch0 x1, x0, x7\n'
         'jal x0, entry\nnop\ndone:\naddi x12, x0, 9\n'
     )
-    _must_reject_pending_path(source, publication_compiler, hardware_config_cls,
+    _must_reject_pending_path(source, publication_without_dma_insertion, hardware_config_cls,
                              publication_dir, expected_dbg0=2)

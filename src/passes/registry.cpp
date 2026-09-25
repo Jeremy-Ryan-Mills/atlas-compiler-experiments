@@ -19,7 +19,7 @@ void visitInstructions(const Block& block, Fn visit) {
     if (block.slot) visit(*block.slot);
 }
 
-void validateReleaseDma(const Code& code) {
+void validateReleaseDma(const Code& code, bool checkPending = true) {
     for (const Block& block : code.blocks) {
         visitInstructions(block, [](const Instr& in) {
             if (in.release && in.op->opClass != OpClass::Csr)
@@ -29,7 +29,7 @@ void validateReleaseDma(const Code& code) {
             throw std::runtime_error("line " + std::to_string(block.slot->line) +
                                      ": atlas.release in a delay slot is not supported by the optimizer");
     }
-    if (code.blocks.empty()) return;
+    if (!checkPending || code.blocks.empty()) return;
 
     // Entry starts idle but must retain pending DMA from backedges.
     std::vector<unsigned> entry(code.blocks.size(), 0);
@@ -94,6 +94,7 @@ const std::vector<Pass>& allPasses() {
     // and delays for whatever the earlier passes produced.
     static const std::vector<Pass> passes = {
         {"strip-artifacts", "remove the old schedule: delays and no-op fillers", stripArtifacts},
+        {"insert-dma-waits", "insert DMA waits before dependent accesses, channel reuse, and completion", insertDmaWaits},
         {"fill-delay-slots", "move an independent scalar instruction into each empty branch delay slot", fillDelaySlots},
         {"schedule", "list-schedule every block and choose the delays", schedule},
     };
@@ -101,10 +102,11 @@ const std::vector<Pass>& allPasses() {
 }
 
 void runPasses(Code& code, const std::vector<std::string>& names, PassContext& ctx) {
-    bool stripsArtifacts = names.empty(), schedules = names.empty(), hasRelease = false;
+    bool stripsArtifacts = names.empty(), insertsDmaWaits = names.empty(), schedules = names.empty(), hasRelease = false;
     int firstReleaseLine = 0;
     for (const std::string& name : names) {
         stripsArtifacts |= name == "strip-artifacts";
+        insertsDmaWaits |= name == "insert-dma-waits";
         schedules |= name == "schedule";
     }
     for (const Block& block : code.blocks)
@@ -134,6 +136,25 @@ void runPasses(Code& code, const std::vector<std::string>& names, PassContext& c
             if (retainedDelay || slotClass == OpClass::Halt)
                 throw std::runtime_error("line " + std::to_string(b.slot->line) + ": " + b.slot->op->name +
                                          " in a delay slot is not supported by the optimizer");
+            if (insertsDmaWaits && !stripsArtifacts && b.slot->op->engine == Engine::Dma && slotClass != OpClass::DmaWait)
+                throw std::runtime_error("line " + std::to_string(b.slot->line) +
+                                         ": insert-dma-waits requires strip-artifacts to move DMA commands out of delay slots");
+        }
+    }
+    if (insertsDmaWaits && !code.blocks.empty()) {
+        std::deque<int> work{0};
+        std::vector<bool> reached(code.blocks.size(), false);
+        reached[0] = true;
+        while (!work.empty()) {
+            const Block& block = code.blocks[work.front()];
+            work.pop_front();
+            if (block.unknownSuccs)
+                throw std::runtime_error("insert-dma-waits requires known control-flow successors");
+            for (int successor : block.succs) {
+                if (successor < 0 || successor >= (int)code.blocks.size())
+                    throw std::runtime_error("insert-dma-waits encountered an invalid control-flow successor");
+                if (!reached[successor]) work.push_back(successor), reached[successor] = true;
+            }
         }
     }
     for (const std::string& name : names) {
@@ -141,18 +162,22 @@ void runPasses(Code& code, const std::vector<std::string>& names, PassContext& c
         for (const Pass& p : allPasses()) known |= name == p.name;
         if (!known) throw std::runtime_error("unknown pass '" + name + "'");
     }
+    if (insertsDmaWaits && !schedules)
+        throw std::runtime_error("insert-dma-waits requires the schedule pass");
     if (hasRelease) {
         if (!schedules)
             throw std::runtime_error("line " + std::to_string(firstReleaseLine) +
                                      ": atlas.release requires the schedule pass");
-        validateReleaseDma(code);
+        validateReleaseDma(code, !insertsDmaWaits);
     }
+    bool waitsReady = !insertsDmaWaits;
     for (const Pass& p : allPasses()) {
         bool selected = names.empty();
         for (const std::string& name : names) selected |= name == p.name;
         if (selected) {
             p.run(code, ctx);
-            if (hasRelease) validateReleaseDma(code);
+            waitsReady |= std::string(p.name) == "insert-dma-waits";
+            if (hasRelease) validateReleaseDma(code, waitsReady);
         }
     }
 }

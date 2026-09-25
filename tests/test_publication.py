@@ -7,6 +7,7 @@ import io
 import json
 from pathlib import Path
 import re
+import shlex
 
 import pytest
 
@@ -30,6 +31,16 @@ def publication_compiler(optimizer):
     if optimizer in harness.BUILTIN_OPTIMIZERS.values():
         pytest.skip('publication contract requires an external atlas-opt')
     return optimizer
+
+
+@pytest.fixture
+def publication_without_dma_insertion(publication_compiler, pytestconfig):
+    """Keep the explicit-wait contract testable when automatic repair is omitted."""
+    command = shlex.split(pytestconfig.getoption('atlas_opt') or
+                          str(harness.REPO_ROOT / 'build' / 'atlas-opt'))
+    command += shlex.split(pytestconfig.getoption('atlas_opt_args'))
+    command += ['--passes', 'strip-artifacts,fill-delay-slots,schedule']
+    return harness.external_optimizer(command)
 
 
 def observe(source, hardware_config_cls, directory, *, dma_scale=1, expected_dbg0=1):
@@ -143,11 +154,11 @@ def test_release_waits_for_dma_and_independent_vstore(
 @pytest.mark.parametrize('wait', ['', 'dma.wait.ch1\n'])
 @pytest.mark.parametrize('label', ['', 'publish:\n'])
 def test_release_rejects_missing_or_wrong_dma_wait(
-    publication_compiler, publication_dir, wait, label
+    publication_without_dma_insertion, publication_dir, wait, label
 ):
     source = 'addi x7, x0, 64\ndma.load.ch0 x0, x0, x7\n' + wait + label + PUBLISH
     with pytest.raises(harness.OptimizerError, match=r'(?i)(release|dma|wait)'):
-        publication_compiler(source, publication_dir)
+        publication_without_dma_insertion(source, publication_dir)
     assert not (publication_dir / 'after.S').exists()
 
 
