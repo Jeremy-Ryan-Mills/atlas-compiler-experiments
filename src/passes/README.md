@@ -36,7 +36,7 @@ program's meaning when the instructions run one at a time, in order.
    taken and when it isn't.
 4. **Only DRAM is live when the program ends.** Registers, VMEM, weight slots, and
    accumulators may be changed or dropped if no later `dma.store` needs them.
-5. **Don't rely on anything in [OPEN_QUESTIONS.md](../../OPEN_QUESTIONS.md).** Use
+5. **Don't rely on anything in [OPEN_QUESTIONS.md](../../.agents/OPEN_QUESTIONS.md).** Use
    the conservative choice listed there.
 6. **Report what you did** with one line in `ctx.log`.
 

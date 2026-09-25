@@ -3,15 +3,17 @@
 `atlas-opt` reads Atlas NPU assembly, builds a dependency graph for every basic
 block, and reschedules the code so the engines overlap while every dependence and
 hardware rule of npu_model's `rtl-match` branch still holds. It then writes the new
-program with the minimum `delay`s. [PLAN.md](PLAN.md) has the design and roadmap;
-[OPEN_QUESTIONS.md](OPEN_QUESTIONS.md) lists what waits until the model is
+program with the minimum `delay`s. [PLAN.md](.agents/PLAN.md) has the design and roadmap;
+[OPEN_QUESTIONS.md](.agents/OPEN_QUESTIONS.md) lists what waits until the model is
 confirmed RTL accurate.
 
 ```sh
-git submodule update --init          # third_party/npu_model at rtl-match
+git submodule update --init -- third_party/npu_model
 cmake -S . -B build -G Ninja && cmake --build build
 build/atlas-opt kernel.S -o kernel.opt.S --viz kernel.html
 ```
+
+Initialize `third_party/atlas-npu` separately for RTL reference.
 
 | Option | What it does |
 |---|---|
@@ -27,42 +29,33 @@ each block's dependency graph before and after, with every instruction placed at
 cycle it issues (one lane per engine). Select an instruction to see what it waits
 for and why.
 
-Optimization supports conditional branches and direct `jal x0, label` jumps.
-It rejects `jalr`, `jal` with a nonzero link register, and `auipc` before running
-any passes: changing instruction addresses would require relocating indirect
-targets, observable link values, and PC-relative values. These checks also cover
-delay slots. An ordinary `delay` in a branch/jump delay slot is supported when
-`strip-artifacts` runs (as it does by default), because that pass removes it.
-A retained slot delay, including one marked `# keep`, and `ecall` or `ebreak` in
-a delay slot are unsupported. The `--check` timing simulator can still inspect
-these instructions without rewriting the input.
+Optimization supports conditional branches and `jal x0, label`. It rejects
+`jalr`, `jal` with a nonzero link register, and `auipc`, including in delay slots,
+because address relocation is unsupported. Ordinary slot delays require
+`strip-artifacts` (enabled by default); slot delays marked `# keep` and slot
+halts are rejected. `--check` can inspect these instructions without rewriting.
 
-Scheduled halts use a no-op guard after preceding delays, including across
-labeled block boundaries. Delays marked `# keep` retain their immediate. The
-checker reports unfinished work at the actual halt cycle instead of assuming
-that halt drains the engines. Robust DMA scheduling conservatively reserves
-remaining port use across waits, including gaps between streamed accesses.
+Scheduled halts use a NOP guard after delays, including across labels;
+`# keep` preserves the delay immediate. The checker reports unfinished work at
+halt. Robust DMA scheduling reserves remaining port use across waits and gaps.
 
-`atlas-opt` accepts `# atlas.release` on a CSR instruction:
+Mark a completion CSR with `# atlas.release`:
 
 ```asm
 vstore m0, 0(x0)
 csrrwi x0, x1, 0xC10 # atlas.release
 ```
 
-The scheduler completes prior fixed-latency work before the marked CSR executes.
-Every potentially pending DMA channel must have an explicit matching wait on
-every path to the release and before channel reuse; missing waits are rejected.
-Release instructions in architectural delay slots and pipelines without
-`schedule` are rejected too.
-The marker is an exact, case-sensitive, whitespace-delimited comment token and
-survives printing and repeated optimization. Preserve it when preparing input.
+Prior fixed-latency work must finish before the CSR executes. Each possibly pending
+DMA channel needs a matching wait on every path to release and before reuse.
+Releases in delay slots or pipelines without `schedule` are rejected. Preserve
+the exact, case-sensitive, whitespace-delimited token during preprocessing;
+printing and reoptimization retain it.
 
-This contract assumes idle program entry. It is opt-in: unmarked CSR writes
-retain their existing behavior, including progress signals issued during work.
-It does not establish host acknowledgment, buffer ownership, or IMEM-slot exit.
-The `--check` simulator detects publication before modeled completion; it does
-not replace the optimizer's all-path explicit-DMA-wait validation.
+Releases assume idle entry; unmarked CSR behavior is unchanged. A release provides
+no host acknowledgment, buffer ownership, or IMEM-slot exit proof.
+`--check` checks modeled completion; optimization additionally requires explicit
+DMA waits on every path.
 
 ## Layout
 
@@ -71,7 +64,7 @@ not replace the optimizer's all-path explicit-DMA-wait validation.
 | `src/core/` | Everything about programs and the machine: assembly parsing and printing (`asm`), basic blocks (`blocks`), known register values (`values`), the rtl-match timing rules (`machine`, `reservations`), dependency graphs (`depgraph`), and a timing simulator whose cycle counts match npu_model's (`simulator`) |
 | `src/passes/` | The optimization passes, one file each, plus `registry.cpp` listing them in order. **See [src/passes/README.md](src/passes/README.md) to add a pass.** |
 | `src/tool/` | The `atlas-opt` command line and the HTML viewer |
-| `tests/` | `tests.cpp` (C++ unit tests, `build/atlas-tests`) and the Python equivalence harness |
+| `tests/` | C++ timing tests and Python equivalence and regression tests |
 
 ## Equivalence tests
 
@@ -83,8 +76,8 @@ inputs, or VMEM.
 
 ```sh
 python -m pytest                              # uses build/atlas-opt if it exists
-python -m pytest --atlas-opt=identity         # harness sanity check: everything passes
-python -m pytest --atlas-opt=strip-delays     # harness sanity check: everything fails
+python -m pytest --atlas-opt=identity         # compare unchanged kernels
+python -m pytest --atlas-opt=strip-delays     # exercise missing-delay detection
 ```
 
 Run it with a Python that has npu_model's dependencies: `uv run pytest` (using this
@@ -93,16 +86,11 @@ The optimizer is invoked as `<cmd> in.S -o out.S` (settable via `--atlas-opt` /
 `$ATLAS_OPT`, extra flags via `--atlas-opt-args` / `$ATLAS_OPT_ARGS`).
 `--artifacts-dir DIR` keeps each kernel's `before.S`/`after.S`, and `--max-cycles`
 sets the cycle budget. A before→after cycle table is printed at the end.
-`SmolVLARmsNormProgram` fails as a BASELINE error: on rtl-match, the unmodified
-kernel already misses its golden output.
+`SmolVLARmsNormProgram` has a known baseline golden-output failure. Built-in
+optimizers skip compiler-specific tests; harness self-tests run independently
+of `--atlas-opt`.
 
-`tests/test_regressions.py` checks relocation restrictions, delay-slot results on
-both branch paths, halt guards, and DMA waits at varied latencies. The C++ tests
-check timing and resource reservations directly.
-
-Publication tests include C++ checks and `tests/test_publication.py`, which
-observes memory at the first expected debug-CSR write in the ordinary model.
-Final-state equivalence alone cannot detect a completion signal issued too early.
-`tests/test_publication_mxu.py` also checks numerical MXU results and source reuse;
-`tests/test_publication_cfg.py` checks branch paths and repeated loop publication.
-`tests/test_publication_channel_reuse.py` checks waits before reusing a DMA channel.
+`tests/test_regressions.py` covers relocation, both branch paths, halt guards,
+and variable DMA latency. `tests/test_publication*.py` checks data and engine
+state at the expected completion signal, including MXU source reuse, branches,
+loops, and DMA channel reuse. C++ tests check timing, metadata, and reservations.

@@ -218,7 +218,7 @@ BUILTIN_OPTIMIZERS: dict[str, Optimizer] = {
 
 def external_optimizer(command: list[str]) -> Optimizer:
     """
-    Wrap a CLI with the `atlas-opt` interface (PLAN.md §5.5):
+    Wrap a CLI with the `atlas-opt` interface (.agents/PLAN.md §5.4):
         <command...> in.S -o out.S
     """
 
