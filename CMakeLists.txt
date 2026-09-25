@@ -28,3 +28,11 @@ add_executable(atlas-tests tests/tests.cpp)
 target_link_libraries(atlas-tests atlas)
 target_compile_definitions(atlas-tests PRIVATE ATLAS_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 add_test(NAME atlas-tests COMMAND atlas-tests)
+
+add_executable(publication-fixed-tests tests/publication_fixed_tests.cpp)
+target_link_libraries(publication-fixed-tests atlas)
+add_test(NAME publication-fixed-tests COMMAND publication-fixed-tests)
+
+add_executable(publication-dma-tests tests/publication_dma_tests.cpp)
+target_link_libraries(publication-dma-tests atlas)
+add_test(NAME publication-dma-tests COMMAND publication-dma-tests)

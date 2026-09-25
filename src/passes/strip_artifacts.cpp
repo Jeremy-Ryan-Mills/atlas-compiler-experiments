@@ -1,4 +1,6 @@
 // strip-artifacts: removes the old schedule so `schedule` can build a new one.
+#include <stdexcept>
+
 #include "core/machine.h"
 #include "passes/pass.h"
 
@@ -16,6 +18,11 @@ static bool scalarRegistersConflict(const Instr& a, const Instr& b) {
 }
 
 void stripArtifacts(Code& code, PassContext& ctx) {
+    // Reject release slots before mutation, including for direct callers.
+    for (const Block& b : code.blocks)
+        if (b.slot && b.slot->release)
+            throw std::runtime_error("line " + std::to_string(b.slot->line) +
+                                     ": atlas.release in a delay slot is not supported by strip-artifacts");
     int removed = 0;
     for (Block& b : code.blocks) {
         std::vector<Instr> kept;

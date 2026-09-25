@@ -43,6 +43,27 @@ checker reports unfinished work at the actual halt cycle instead of assuming
 that halt drains the engines. Robust DMA scheduling conservatively reserves
 remaining port use across waits, including gaps between streamed accesses.
 
+`atlas-opt` accepts `# atlas.release` on a CSR instruction:
+
+```asm
+vstore m0, 0(x0)
+csrrwi x0, x1, 0xC10 # atlas.release
+```
+
+The scheduler completes prior fixed-latency work before the marked CSR executes.
+Every potentially pending DMA channel must have an explicit matching wait on
+every path to the release and before channel reuse; missing waits are rejected.
+Release instructions in architectural delay slots and pipelines without
+`schedule` are rejected too.
+The marker is an exact, case-sensitive, whitespace-delimited comment token and
+survives printing and repeated optimization. Preserve it when preparing input.
+
+This contract assumes idle program entry. It is opt-in: unmarked CSR writes
+retain their existing behavior, including progress signals issued during work.
+It does not establish host acknowledgment, buffer ownership, or IMEM-slot exit.
+The `--check` simulator detects publication before modeled completion; it does
+not replace the optimizer's all-path explicit-DMA-wait validation.
+
 ## Layout
 
 | Folder | Contents |
@@ -76,3 +97,10 @@ sets the cycle budget. A before→after cycle table is printed at the end.
 kernel already misses its golden output.
 
 The C++ tests check timing and resource reservations directly.
+
+Publication tests include C++ checks and `tests/test_publication.py`, which
+observes memory at the first expected debug-CSR write in the ordinary model.
+Final-state equivalence alone cannot detect a completion signal issued too early.
+`tests/test_publication_mxu.py` also checks numerical MXU results and source reuse;
+`tests/test_publication_cfg.py` checks branch paths and repeated loop publication.
+`tests/test_publication_channel_reuse.py` checks waits before reusing a DMA channel.
