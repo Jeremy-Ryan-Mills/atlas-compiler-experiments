@@ -96,7 +96,9 @@ sets the cycle budget. A before→after cycle table is printed at the end.
 `SmolVLARmsNormProgram` fails as a BASELINE error: on rtl-match, the unmodified
 kernel already misses its golden output.
 
-The C++ tests check timing and resource reservations directly.
+`tests/test_regressions.py` checks relocation restrictions, delay-slot results on
+both branch paths, halt guards, and DMA waits at varied latencies. The C++ tests
+check timing and resource reservations directly.
 
 Publication tests include C++ checks and `tests/test_publication.py`, which
 observes memory at the first expected debug-CSR write in the ordinary model.
