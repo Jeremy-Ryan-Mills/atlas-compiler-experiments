@@ -6,12 +6,12 @@ static bool isArtifact(const Instr& in) {
     return (in.op->opClass == OpClass::Delay && !in.keep) || isNop(in);
 }
 
-// True if `a` writes a scalar register that `b` reads.
-static bool writesRegisterReadBy(const Instr& a, const Instr& b) {
+// Preserve scalar RAW/WAR/WAW order, including jump link registers.
+static bool scalarRegistersConflict(const Instr& a, const Instr& b) {
     Footprint fa = footprintOf(a, unknownRegs()), fb = footprintOf(b, unknownRegs());
-    for (const Access& w : fa.accesses)
-        for (const Access& r : fb.accesses)
-            if (w.write && !r.write && w.res == Res::XReg && r.res == Res::XReg && w.first == r.first) return true;
+    for (const Access& x : fa.accesses)
+        for (const Access& y : fb.accesses)
+            if (x.res == Res::XReg && y.res == Res::XReg && x.first == y.first && (x.write || y.write)) return true;
     return false;
 }
 
@@ -28,7 +28,7 @@ void stripArtifacts(Code& code, PassContext& ctx) {
         if (isArtifact(*b.slot)) {
             b.slot.reset();
             removed++;
-        } else if (!writesRegisterReadBy(*b.slot, *b.terminator)) {
+        } else if (b.slot->op->opClass != OpClass::Delay && b.slot->op->opClass != OpClass::Halt && !scalarRegistersConflict(*b.slot, *b.terminator)) {
             // The slot runs on both paths, like the block body, so it can run before the branch.
             b.body.push_back(*b.slot);
             b.slot.reset();

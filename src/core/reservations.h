@@ -15,9 +15,8 @@ public:
     std::string conflict(const Instr& in, const Footprint& f, int cycle) const;
     void reserve(const Instr& in, const Footprint& f, int cycle);
 
-    // A dma.wait issued at `cycle` may stall for any number of cycles, which shifts
-    // everything after it. To stay correct for every stall length, resources that
-    // earlier instructions still hold later on are treated as busy from the wait onward.
+    // DMA stalls require reservations from the wait through each resource's last use.
+    // Port rows become unknown.
     void extendForWait(int cycle);
 
     // Drops bookkeeping for cycles before `cycle` (used by long simulations).

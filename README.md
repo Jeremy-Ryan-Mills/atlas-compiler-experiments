@@ -27,6 +27,22 @@ each block's dependency graph before and after, with every instruction placed at
 cycle it issues (one lane per engine). Select an instruction to see what it waits
 for and why.
 
+Optimization supports conditional branches and direct `jal x0, label` jumps.
+It rejects `jalr`, `jal` with a nonzero link register, and `auipc` before running
+any passes: changing instruction addresses would require relocating indirect
+targets, observable link values, and PC-relative values. These checks also cover
+delay slots. An ordinary `delay` in a branch/jump delay slot is supported when
+`strip-artifacts` runs (as it does by default), because that pass removes it.
+A retained slot delay, including one marked `# keep`, and `ecall` or `ebreak` in
+a delay slot are unsupported. The `--check` timing simulator can still inspect
+these instructions without rewriting the input.
+
+Scheduled halts use a no-op guard after preceding delays, including across
+labeled block boundaries. Delays marked `# keep` retain their immediate. The
+checker reports unfinished work at the actual halt cycle instead of assuming
+that halt drains the engines. Robust DMA scheduling conservatively reserves
+remaining port use across waits, including gaps between streamed accesses.
+
 ## Layout
 
 | Folder | Contents |
@@ -58,3 +74,5 @@ The optimizer is invoked as `<cmd> in.S -o out.S` (settable via `--atlas-opt` /
 sets the cycle budget. A before→after cycle table is printed at the end.
 `SmolVLARmsNormProgram` fails as a BASELINE error: on rtl-match, the unmodified
 kernel already misses its golden output.
+
+The C++ tests check timing and resource reservations directly.

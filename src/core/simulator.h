@@ -13,13 +13,12 @@ struct SimOptions {
 
 struct SimResult {
     long long cycles = 0;       // matches npu_model's cycle count for the same program
-    long long issued = 0;       // dynamic instructions issued (including delays)
+    long long issued = 0;       // issued instructions, including delays but not halt
     long long delays = 0;       // dynamic `delay` instructions
     std::vector<std::string> violations;          // broken dependences or hardware rules
     std::string stopReason;                       // empty when the program ran to its end
 };
 
-// Runs the program on a timing model of the rtl-match core: scalar code is executed
-// for real (so loops and addresses are exact), and every issued instruction is
-// checked against everything still in flight.
+// RTL-match timing simulation with scalar execution and in-flight hazard checks.
+// Halt reports unfinished work; natural falloff drains units and delays.
 SimResult simulate(const AsmProgram& prog, const SimOptions& opt = {});

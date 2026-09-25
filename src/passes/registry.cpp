@@ -14,10 +14,32 @@ const std::vector<Pass>& allPasses() {
 }
 
 void runPasses(Code& code, const std::vector<std::string>& names, PassContext& ctx) {
-    for (const Block& b : code.blocks)
-        for (const Instr& in : b.body)
-            if (in.op->name == "auipc")  // its result is its own address, which every pass changes
-                throw std::runtime_error("line " + std::to_string(in.line) + ": auipc is not supported by the optimizer");
+    bool stripsArtifacts = names.empty();
+    for (const std::string& name : names) stripsArtifacts |= name == "strip-artifacts";
+    // Reject unrelocatable addresses before any pass mutates the program.
+    auto validate = [](const Instr& in) {
+        std::string reason;
+        if (in.op->name == "auipc")
+            reason = "auipc is not supported by the optimizer (PC-relative values cannot be relocated)";
+        else if (in.op->name == "jalr")
+            reason = "jalr is not supported by the optimizer (indirect targets cannot be relocated)";
+        else if (in.op->name == "jal" && in.rd != 0)
+            reason = "jal with a nonzero link register is not supported by the optimizer (link values cannot be relocated)";
+        if (!reason.empty()) throw std::runtime_error("line " + std::to_string(in.line) + ": " + reason);
+    };
+    for (const Block& b : code.blocks) {
+        for (const Instr& in : b.body) validate(in);
+        if (b.terminator) validate(*b.terminator);
+        if (b.slot) {
+            validate(*b.slot);
+            OpClass slotClass = b.slot->op->opClass;
+            // Only stripped delays are safe in branch slots.
+            bool retainedDelay = slotClass == OpClass::Delay && (b.slot->keep || !stripsArtifacts);
+            if (retainedDelay || slotClass == OpClass::Halt)
+                throw std::runtime_error("line " + std::to_string(b.slot->line) + ": " + b.slot->op->name +
+                                         " in a delay slot is not supported by the optimizer");
+        }
+    }
     for (const std::string& name : names) {
         bool known = false;
         for (const Pass& p : allPasses()) known |= name == p.name;

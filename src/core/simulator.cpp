@@ -101,6 +101,20 @@ SimResult simulate(const AsmProgram& prog, const SimOptions& opt) {
             break;
         }
 
+        // Halt neither retires nor drains; only completions through this tick count.
+        if (op.opClass == OpClass::Halt) {
+            for (const InFlight& a : active)
+                if (a.issue + a.f.doneAge > t)
+                    violation(where(in) + ": halts before " + where(a.in) + " completes (cycle " +
+                              std::to_string(a.issue + a.f.doneAge) + ")");
+            for (const QueuedDma& d : dma)
+                if (d.complete > t)
+                    violation(where(in) + ": halts before " + where(d.in) + " completes (cycle " +
+                              std::to_string(d.complete) + ")");
+            r.cycles = t;
+            return r;
+        }
+
         Footprint f = footprintOf(in, regs);
         if (!f.error.empty()) violation(where(in) + ": " + f.error);
 
@@ -200,7 +214,12 @@ SimResult simulate(const AsmProgram& prog, const SimOptions& opt) {
         }
         applyScalar(in, regs);
         if (op.opClass == OpClass::Jump && in.rd != 0) regs[in.rd] = (uint32_t)(pc + 1);
-        if (op.opClass == OpClass::Halt) break;
+        // Halt bypasses delay stalls, including those in branch slots.
+        if (op.opClass == OpClass::Delay && nextPc >= 0 && nextPc < n &&
+            prog.instrs[nextPc].op->opClass == OpClass::Halt)
+            nextT = t + 1;
+        // Falloff still drains the delay counter.
+        if (op.opClass == OpClass::Delay) end = std::max(end, t + (in.imm & 0xFFF));
         pc = nextPc;
         t = nextT;
     }

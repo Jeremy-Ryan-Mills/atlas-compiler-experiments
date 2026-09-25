@@ -62,7 +62,7 @@ std::string ReservationTable::conflict(const Instr& in, const Footprint& f, int 
         auto other = ports_.find(p.key ^ 1);
         if (other != ports_.end()) {
             auto u = other->second.find(p.cycle);
-            if (u != other->second.end() && u->second.reg == p.reg && u->second.row == p.row)
+            if (u != other->second.end() && (u->second.reg < 0 || u->second.reg == p.reg) && (u->second.row < 0 || u->second.row == p.row))
                 return "same-row read/write on m" + std::to_string(p.reg);
         }
         for (size_t j = 0; j < i; j++) {  // the instruction's own port uses must also fit together
@@ -98,16 +98,17 @@ void ReservationTable::reserve(const Instr& in, const Footprint& f, int cycle) {
 }
 
 void ReservationTable::extendForWait(int cycle) {
+    // Widen each hold separately to preserve unit capacity counts.
     for (UnitWindow& w : unitWindows_) {
         if (w.to < cycle || w.from <= cycle) continue;
         for (int c = cycle; c < w.from; c++) units_[w.key][c]++;
         w.from = cycle;
     }
     for (PortWindow& w : portWindows_) {
-        if (w.to < cycle || w.from <= cycle) continue;
-        for (int c = cycle; c < w.from; c++)
-            if (!ports_[w.key].count(c)) ports_[w.key][c] = PortUse{};
-        w.from = cycle;
+        if (w.to < cycle) continue;
+        // Fill burst gaps and clear row identity: stalls make sharing unsafe.
+        for (int c = cycle; c <= w.to; c++) ports_[w.key][c] = PortUse{};
+        w.from = std::min(w.from, cycle);
     }
 }
 
