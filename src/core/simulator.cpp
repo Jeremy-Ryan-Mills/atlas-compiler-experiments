@@ -81,6 +81,22 @@ SimResult simulate(const AsmProgram& prog, const SimOptions& opt) {
         if ((int)r.violations.size() < opt.maxViolations) r.violations.push_back(text);
     };
 
+    // Validate metadata independently, including untaken slots.
+    for (int i = 0; i < n; i++) {
+        const Instr& in = prog.instrs[i];
+        if (!in.release) continue;
+        if (in.op->opClass != OpClass::Csr) {
+            violation(where(in) + ": atlas.release is only valid on a CSR instruction");
+            r.stopReason = "invalid release annotation";
+            return r;
+        }
+        if (i > 0 && isControlFlow(*prog.instrs[i - 1].op)) {
+            violation(where(in) + ": atlas.release in a delay slot is not supported");
+            r.stopReason = "unsupported release delay slot";
+            return r;
+        }
+    }
+
     long long t = 2;  // npu_model: word 0 is fetched in cycle 1 and issues in cycle 2
     long long lastIssue = 0, end = 0;
     int pc = 0, redirect = -1;
@@ -99,6 +115,32 @@ SimResult simulate(const AsmProgram& prog, const SimOptions& opt) {
             violation(where(in) + ": branch or jump in a delay slot");
             r.stopReason = "illegal instruction";
             break;
+        }
+
+        // Check live work before dispatch; same-tick completion is too late.
+        if (in.release) {
+            for (const InFlight& a : active)
+                if (a.issue + a.f.doneAge >= t)
+                    violation(where(in) + ": atlas.release publishes before " + where(a.in) +
+                              " completes (cycle " + std::to_string(a.issue + a.f.doneAge) + ")");
+            for (const QueuedDma& d : dma)
+                if (d.complete >= t)
+                    violation(where(in) + ": atlas.release publishes before " + where(d.in) +
+                              " completes (cycle " + std::to_string(d.complete) + ")");
+        }
+
+        // Halt neither retires nor drains; only completions through this tick count.
+        if (op.opClass == OpClass::Halt) {
+            for (const InFlight& a : active)
+                if (a.issue + a.f.doneAge > t)
+                    violation(where(in) + ": halts before " + where(a.in) + " completes (cycle " +
+                              std::to_string(a.issue + a.f.doneAge) + ")");
+            for (const QueuedDma& d : dma)
+                if (d.complete > t)
+                    violation(where(in) + ": halts before " + where(d.in) + " completes (cycle " +
+                              std::to_string(d.complete) + ")");
+            r.cycles = t;
+            return r;
         }
 
         Footprint f = footprintOf(in, regs);
@@ -200,7 +242,12 @@ SimResult simulate(const AsmProgram& prog, const SimOptions& opt) {
         }
         applyScalar(in, regs);
         if (op.opClass == OpClass::Jump && in.rd != 0) regs[in.rd] = (uint32_t)(pc + 1);
-        if (op.opClass == OpClass::Halt) break;
+        // Halt bypasses delay stalls, including those in branch slots.
+        if (op.opClass == OpClass::Delay && nextPc >= 0 && nextPc < n &&
+            prog.instrs[nextPc].op->opClass == OpClass::Halt)
+            nextT = t + 1;
+        // Falloff still drains the delay counter.
+        if (op.opClass == OpClass::Delay) end = std::max(end, t + (in.imm & 0xFFF));
         pc = nextPc;
         t = nextT;
     }

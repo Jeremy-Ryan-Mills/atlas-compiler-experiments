@@ -7,7 +7,7 @@
 
 // Settings and results shared by the passes of one run.
 struct PassContext {
-    bool robustDma = true;         // never assume when a dma.wait releases (OPEN_QUESTIONS.md #1)
+    bool robustDma = true;         // never assume when a dma.wait releases (.agents/OPEN_QUESTIONS.md #1)
     std::vector<std::string> log;  // each pass adds a line describing what it did
 };
 

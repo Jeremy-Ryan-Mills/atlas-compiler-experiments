@@ -181,6 +181,174 @@ TEST(schedules_stay_valid_when_dma_is_slower) {
     }
 }
 
+TEST(delay_slot_motion_preserves_link_dependencies) {
+    // Test directly; the full pipeline rejects link addresses.
+    for (const std::string slot : {"addi x2, x1, 7", "addi x1, x0, 17"}) {
+        Code code = buildBlocks(parseAsm("jal x1, target\n" + slot + "\ntarget:\nsw x1, 0(x0)\n"));
+        PassContext ctx;
+        stripArtifacts(code, ctx);
+        CHECK(code.blocks[0].slot.has_value());
+        CHECK(code.blocks[0].body.empty());
+    }
+    Code independent = buildBlocks(parseAsm("jal x0, target\naddi x2, x0, 17\ntarget:\nsw x2, 0(x0)\n"));
+    PassContext ctx;
+    stripArtifacts(independent, ctx);
+    CHECK(!independent.blocks[0].slot.has_value());
+    CHECK_EQ(independent.blocks[0].body.size(), 1u);
+}
+
+TEST(unrelocatable_control_flow_is_rejected_before_mutation) {
+    for (const std::string source : {
+             "delay 10\njalr x0, x1, 0\nnop\n",
+             "delay 10\njal x1, target\nnop\ntarget:\naddi x2, x0, 17\n",
+             "delay 10\nauipc x1, 0\n",
+             "delay 10\nbeq x0, x0, target\nauipc x1, 0\ntarget:\nsw x1, 0(x0)\n",
+             "delay 10\nbeq x0, x0, target\ndelay 1 # keep\ntarget:\nsw x1, 0(x0)\n",
+             "delay 10\nbeq x0, x0, target\necall\ntarget:\nsw x1, 0(x0)\n",
+             "delay 10\nbeq x0, x0, target\nebreak\ntarget:\nsw x1, 0(x0)\n"}) {
+        Code code = buildBlocks(parseAsm(source));
+        std::string before = printAsm(flatten(code));
+        PassContext ctx;
+        bool rejected = false;
+        try { runPasses(code, {}, ctx); }
+        catch (const std::runtime_error&) { rejected = true; }
+        CHECK(rejected);
+        CHECK(printAsm(flatten(code)) == before);
+        CHECK(ctx.log.empty());
+    }
+}
+
+TEST(artifact_delay_slots_require_the_stripping_pass) {
+    const std::string source = "beq x0, x0, target\ndelay 8\ntarget:\naddi x1, x0, 17\n";
+    AsmProgram out = optimize(parseAsm(source));
+    CHECK(simulate(out).violations.empty());
+    Code code = buildBlocks(parseAsm(source));
+    PassContext ctx;
+    bool rejected = false;
+    try { runPasses(code, {"schedule"}, ctx); }
+    catch (const std::runtime_error&) { rejected = true; }
+    CHECK(rejected);
+    CHECK(ctx.log.empty());
+}
+
+TEST(dma_wait_reserves_gaps_in_live_port_windows) {
+    Instr reduction = makeInstr("vredsum.bf16", 4, 0);
+    Instr store = makeInstr("vstore", 32);
+    ReservationTable table;
+    table.reserve(reduction, footprintOf(reduction, zeroRegs()), 0);
+    // Reads occupy ages 0..31 and 64..95; the store fits the gap.
+    CHECK(table.conflict(store, footprintOf(store, zeroRegs()), 31).empty());
+    table.extendForWait(29);
+    CHECK(!table.conflict(store, footprintOf(store, zeroRegs()), 31).empty());
+    table.extendForWait(30);
+    CHECK(!table.conflict(store, footprintOf(store, zeroRegs()), 31).empty());
+    CHECK(table.conflict(store, footprintOf(store, zeroRegs()), 96).empty());
+}
+
+TEST(dma_wait_invalidates_exact_row_and_read_sharing_assumptions) {
+    Instr vpu = makeInstr("vmov", 2, 0);
+    Footprint reader;
+    reader.accesses.push_back({Res::MReg, false, 7, 1, 10, 1});
+    ReservationTable table;
+    table.reserve(vpu, reader, 0);
+    CHECK(table.conflict(vpu, reader, 0).empty());  // matching reads can share
+    table.extendForWait(5);
+    CHECK(!table.conflict(vpu, reader, 0).empty());
+
+    Footprint writer;
+    writer.accesses.push_back({Res::MReg, true, 2, 1, 0, 1});
+    CHECK(!table.conflict(makeInstr("vload"), writer, 6).empty());
+    CHECK(table.conflict(makeInstr("vload"), writer, 11).empty());
+}
+
+TEST(repeated_dma_waits_preserve_unit_capacity_counts) {
+    Instr compute = makeInstr("vmatmul.mxu0");
+    Footprint f;
+    f.holds.push_back({Unit::MxuCompute, 0, 10, 20});
+    ReservationTable table;
+    table.reserve(compute, f, 0);
+    table.reserve(compute, f, 0);
+    table.extendForWait(5);
+    table.extendForWait(5);
+    table.extendForWait(6);
+    Footprint candidate;
+    candidate.holds.push_back({Unit::MxuCompute, 0, 0, 0});
+    CHECK(table.conflict(compute, candidate, 6).empty());
+    table.reserve(compute, candidate, 6);
+    CHECK(!table.conflict(compute, candidate, 6).empty());
+}
+
+TEST(robust_schedule_survives_dma_stalls_between_read_bursts) {
+    AsmProgram original = parseAsm(
+        "vredsum.bf16 m4, m0\ndma.config.ch0 x5\ndelay 26 # keep\n"
+        "dma.wait.ch0\ndelay 140\naddi x5, x0, 0\nvstore m32, 0(x5)\n");
+    AsmProgram optimized = optimize(original);
+    for (double scale : {0.1, 0.5, 1.0, 1.7, 3.0, 10.0, 100.0}) {
+        SimOptions options;
+        options.dmaLatencyScale = scale;
+        CHECK(simulate(original, options).violations.empty());
+        SimResult result = simulate(optimized, options);
+        CHECK(result.violations.empty());
+        CHECK(result.stopReason.empty());
+    }
+}
+
+TEST(halt_stops_before_delay_stalls_and_does_not_retire) {
+    for (const std::string halt : {"ecall", "ebreak"}) {
+        SimResult empty = simulate(parseAsm(halt + "\n"));
+        CHECK_EQ(empty.cycles, 2);
+        CHECK_EQ(empty.issued, 0);
+        SimResult unsafe = simulate(parseAsm("lw x1, 0(x0)\ndelay 2\n" + halt + "\n"));
+        CHECK_EQ(unsafe.cycles, 4);
+        CHECK_EQ(unsafe.issued, 2);
+        CHECK(!unsafe.violations.empty());
+        AsmProgram safe = optimize(parseAsm("lw x1, 0(x0)\n" + halt + "\n"));
+        SimResult result = simulate(safe);
+        CHECK_EQ(result.cycles, 6);
+        CHECK_EQ(result.issued, 3);
+        CHECK(result.violations.empty());
+        CHECK(printAsm(optimize(safe)) == printAsm(safe));
+    }
+    // Completion on the halt tick is safe.
+    SimResult sameTick = simulate(parseAsm("sw x1, 0(x0)\necall\n"));
+    CHECK_EQ(sameTick.cycles, 3);
+    CHECK(sameTick.violations.empty());
+    CHECK_EQ(simulatedCycles("lw x1, 0(x0)\n"), 5);
+    CHECK_EQ(simulatedCycles("delay 5\n"), 7);
+}
+
+TEST(halt_guards_cover_block_boundaries_kept_delays_and_long_waits) {
+    for (const std::string halt : {"ecall", "ebreak"}) {
+        for (const std::string delay : {"", "delay 100 # keep\n", "delay 4095 # keep\n"}) {
+            AsmProgram out = optimize(parseAsm("lw x1, 0(x0)\n" + delay + "exit:\n" + halt + "\n"));
+            CHECK(isNop(out.instrs[out.instrs.size() - 2]));
+            CHECK(out.labels[out.instrs.size() - 1] == std::vector<std::string>{"exit"});
+            CHECK(simulate(out).violations.empty());
+            CHECK(printAsm(optimize(out)) == printAsm(out));
+        }
+    }
+    Block b;
+    b.body = {makeInstr("lw", 1)};
+    b.issue = {0};
+    b.terminator = makeInstr("ecall");
+    b.terminatorCycle = 9000;
+    b.endCycle = 9001;
+    b.scheduled = true;
+    Code code;
+    code.blocks.push_back(b);
+    AsmProgram out = flatten(code);
+    CHECK_EQ(simulate(out).cycles, 9002);
+    CHECK(simulate(out).violations.empty());
+    for (const Instr& in : out.instrs)
+        if (in.op->opClass == OpClass::Delay) CHECK(in.imm >= 0 && in.imm <= 4095);
+
+    Code labeled = buildBlocks(parseAsm("delay 100 # keep\nempty:\nnop\nexit:\necall\n"));
+    PassContext ctx;
+    runPasses(labeled, {}, ctx);
+    CHECK_EQ(labeled.blocks[0].endCycle, 102);
+    CHECK_EQ(simulate(flatten(labeled)).cycles, 104);
+}
+
 TEST(all_rtl_match_kernels) {
     std::filesystem::path dir = std::filesystem::path(ATLAS_SOURCE_DIR) / "third_party/npu_model/npu_model/configs/programs/asm";
     if (!std::filesystem::exists(dir)) {

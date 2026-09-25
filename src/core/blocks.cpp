@@ -109,8 +109,10 @@ static void emitIdle(std::vector<Instr>& out, int cycles) {
 AsmProgram flatten(const Code& code) {
     AsmProgram prog;
     std::vector<std::vector<std::string>> labelsAt;
+    bool scheduled = false;
     for (size_t bi = 0; bi < code.blocks.size(); bi++) {
         const Block& b = code.blocks[bi];
+        scheduled |= b.scheduled;
         size_t first = prog.instrs.size();
         labelsAt.resize(first + 1);
         for (const std::string& l : b.labels) labelsAt[first].push_back(l);
@@ -145,5 +147,35 @@ AsmProgram flatten(const Code& code) {
     labelsAt.resize(prog.instrs.size() + 1);
     for (const std::string& l : code.endLabels) labelsAt.back().push_back(l);
     prog.labels = labelsAt;
+
+    // Halt bypasses delay stalls; guard it with a NOP, preserving kept delays.
+    // Join blocks first to cover labeled fallthrough halts.
+    if (scheduled) {
+        AsmProgram guarded;
+        for (size_t i = 0; i < prog.instrs.size(); i++) {
+            Instr in = prog.instrs[i];
+            guarded.labels.push_back(prog.labels[i]);
+            if (in.op->opClass == OpClass::Delay && i + 1 < prog.instrs.size() &&
+                prog.instrs[i + 1].op->opClass == OpClass::Halt) {
+                int idle = naturalGap(in);
+                if (idle > 1 || in.keep) {
+                    if (!in.keep) {
+                        in.imm = idle - 2;
+                        in.immText.clear();
+                    }
+                    guarded.instrs.push_back(in);
+                    guarded.labels.emplace_back();
+                }
+                Instr guard = makeNop();
+                guard.line = in.line;
+                guard.comment = "halt guard";
+                guarded.instrs.push_back(guard);
+            } else {
+                guarded.instrs.push_back(in);
+            }
+        }
+        guarded.labels.push_back(prog.labels.back());
+        return guarded;
+    }
     return prog;
 }

@@ -151,6 +151,10 @@ void scalarRegs(Builder& b, const Instr& in) {
 Footprint footprintOf(const Instr& in, const RegValues& regs) {
     Builder b;
     const OpInfo& op = *in.op;
+    if (in.release && op.opClass != OpClass::Csr) {
+        b.f.error = "atlas.release is only valid on a CSR instruction";
+        return b.f;
+    }
     int mxu = op.mxu;
     int cf = mxu == 0 ? 63 : 3;  // age of the first accumulator row written by a matmul
 
@@ -441,6 +445,9 @@ Dependence dependence(const Instr& a, const Footprint& fa, const Instr& b, const
 
     if (isBarrier(a)) consider(A.opClass == OpClass::Delay ? 1 + (int)(a.imm & 0xFFF) : 1, EdgeKind::Order, A.name + " is a barrier");
     if (isBarrier(b)) consider(1, EdgeKind::Order, B.name + " is a barrier");
+    // CSR runs before engines; same-tick completion is too late. DMA needs a wait.
+    if (b.release)
+        consider(fa.doneAge + 1, EdgeKind::Order, "atlas.release waits for prior fixed-latency work to complete");
 
     // DMA commands leave the queue in issue order; waits stay ordered with their channel.
     if (A.engine == Engine::Dma && B.engine == Engine::Dma) {

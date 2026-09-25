@@ -209,6 +209,14 @@ static std::vector<Instr> expandLi(int rd, long long value) {
     return {makeInstr("lui", rd, 0, 0, hi), makeInstr("addi", rd, rd, 0, lo & 0xFFF)};
 }
 
+// Match an exact, case-sensitive, whitespace-delimited token.
+static bool hasReleaseToken(const std::string& comment) {
+    std::istringstream words(comment);
+    for (std::string word; words >> word;)
+        if (word == "atlas.release") return true;
+    return false;
+}
+
 // Fills the operands of `in` from the tokens after the mnemonic. A branch target
 // written as a number (a word offset) is reported through `numericTarget`.
 static void parseOperands(Instr& in, const std::vector<std::string>& toks, bool& numericTarget) {
@@ -255,7 +263,11 @@ AsmProgram parseAsm(const std::string& text, const std::string& fileName) {
                 prog.labels.back().push_back(trim(line.substr(0, colon)));
                 line = trim(line.substr(colon + 1));
             }
-            if (line.empty()) continue;
+            bool release = hasReleaseToken(comment);
+            if (line.empty()) {
+                if (release) throw ParseError("atlas.release must annotate a CSR instruction");
+                continue;
+            }
             std::vector<std::string> toks = tokenize(line);
             std::string name = lower(toks[0]);
             std::vector<Instr> produced;
@@ -277,6 +289,9 @@ AsmProgram parseAsm(const std::string& text, const std::string& fileName) {
                 in.line = lineNo;
                 if (i == 0) in.comment = comment;
                 in.keep = in.op->opClass == OpClass::Delay && comment.find("keep") != std::string::npos;
+                in.release = release;
+                if (in.release && in.op->opClass != OpClass::Csr)
+                    throw ParseError("atlas.release is only valid on a CSR instruction");
                 prog.instrs.push_back(in);
                 prog.labels.emplace_back();
             }
@@ -338,8 +353,15 @@ std::string printAsm(const AsmProgram& prog) {
             for (const std::string& l : prog.labels[i]) out += l + ":\n";
         if (i == prog.instrs.size()) break;
         const Instr& in = prog.instrs[i];
+        if (in.release && in.op->opClass != OpClass::Csr)
+            throw ParseError("atlas.release is only valid on a CSR instruction");
+        bool token = hasReleaseToken(in.comment);
+        if (token && !in.release)
+            throw ParseError("atlas.release comment disagrees with the instruction's release flag");
+        std::string comment = in.comment;
+        if (in.release && !token) comment += (comment.empty() ? "" : " ") + std::string("atlas.release");
         out += formatInstr(in);
-        if (!in.comment.empty()) out += "   # " + in.comment;
+        if (!comment.empty()) out += "   # " + comment;
         out += "\n";
     }
     return out;
